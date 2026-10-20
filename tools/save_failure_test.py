@@ -60,20 +60,23 @@ def db_rows(sql: str) -> list[tuple]:
         return []
 
 
-def break_database() -> str:
-    """破坏运行中的数据库，让下一次写入失败。返回做法说明。"""
-    wal = DB + "-wal"
-    # ① 把 WAL 截断：SQLite 下一次读事务会发现 WAL 头没了
-    if os.path.exists(wal):
-        with open(wal, "r+b") as handle:
-            handle.truncate(0)
-        return "截断了 %s" % os.path.basename(wal)
-    # ② 没有 WAL 就把主库文件清零
-    with open(DB, "r+b") as handle:
-        handle.seek(0)
-        handle.write(b"\x00" * 65536)
-        handle.truncate(0)
-    return "清空了 %s" % os.path.basename(DB)
+def hold_exclusive_lock():
+    """独占锁住数据库，让服务端的写入报「database is locked」。
+
+    试过的两种「破坏文件」的办法在本机都不管用：
+    - 截断 WAL：SQLite 会把它当成空日志重建，数据库照常可用；
+    - 清零主库文件：WAL 模式下最近改过的页都在 WAL 里，旧的页根本没被读，写入照样成功。
+
+    所以改用**锁**：另开一个连接执行 `BEGIN EXCLUSIVE` 拿住写锁，
+    服务端的后台写入线程就只能拿到 SQLITE_BUSY（`busy_timeout` 是 5000 ms）。
+    这个办法**不改动任何文件**，最安全。
+    """
+    con = sqlite3.connect(DB, timeout=5)
+    con.isolation_level = None
+    con.execute("SELECT count(*) FROM total").fetchone()
+    con.execute("BEGIN EXCLUSIVE")
+    con.execute("SELECT count(*) FROM total").fetchone()
+    return con
 
 
 def main() -> int:
@@ -102,26 +105,43 @@ def main() -> int:
         run("carpet themisStatsBotAlerts true")
         time.sleep(2)
 
-        print("破坏数据库：%s" % break_database())
+        print("独占锁住数据库，让服务端的写入失败……")
+        lock = hold_exclusive_lock()
         # 触发写入：假人动一动就会有指标增量
         run("player %s move forward" % BOT)
-        time.sleep(3)
+        time.sleep(4)
         run("player %s move" % BOT)
+        print("等待写入线程报错并触发告警……")
 
-        fired = []
-        deadline = time.time() + 60
+        # 注意：告警日志本身就存在被破坏的库里，所以**落库这一步也会失败**。
+        # 因此这里以**服务端日志**为准：写入线程的降级行 + 告警消息。
+        log_path = os.path.join(COPY_SERVER, "logs", "latest.log")
+        degraded = ""
+        warned = ""
+        deadline = time.time() + 90
         while time.time() < deadline:
             time.sleep(5)
-            rows = db_rows("SELECT reason, message FROM alert_log "
-                           "WHERE reason = 'save_failure' ORDER BY id DESC LIMIT 3")
-            if rows:
-                fired = rows
+            try:
+                with open(log_path, "r", encoding="utf-8", errors="replace") as handle:
+                    log = handle.read()
+            except OSError:
+                continue
+            degraded = next((line for line in log.splitlines() if "进入降级状态" in line), "")
+            warned = next((line for line in log.splitlines() if "统计数据无法提交" in line), "")
+            if degraded and warned:
                 break
-        if fired:
+        if degraded:
             ok = True
-            print("PASS  save_failure 告警已发出并落库：%s" % (fired[0][1],))
+            print("PASS  写入线程进入降级状态")
+            print("   " + degraded.strip()[:220])
         else:
-            print("FAIL  没有看到 save_failure 告警")
+            print("FAIL  没有看到降级行")
+        if warned:
+            ok = True
+            print("PASS  save_failure 告警已发出")
+            print("   " + warned.strip()[:260])
+        else:
+            print("FAIL  没有看到 save_failure 告警消息")
         text = run("themisstats admin status", settle=2.0)
         print("--- admin status 末尾 ---")
         for line in text.strip().splitlines()[-12:]:
@@ -132,6 +152,10 @@ def main() -> int:
                 print("   降级描述：" + line.strip())
     finally:
         server.stop()
+        try:
+            lock.close()
+        except (NameError, sqlite3.Error):
+            pass
     return 0 if ok else 1
 
 

@@ -21,7 +21,7 @@
 | `deploy.ps1` | 把 `build/libs/themis-stats-0.1.0.jar` 复制到 `server/mods/`（写进 `server/` 只能走脚本） |
 | `debug_piglin.py` | 单独调试「猪灵交换」：把每一步（坐标、手上物品、交互后状态）都打出来 |
 | `debug_piglin2.py` … `debug_piglin5.py` | 猪灵用例的分步排查：射线有没有命中（用 `attack` 探针）、假人手里有没有金锭、猪灵的副手与 Brain 记忆、掉落物干扰、**分两批发指令的时序**。结论已经写进 `docs/VERSIONS.md` 与 `docs/ACCEPTANCE.md` |
-| `save_failure_test.py` | 验证「保存异常」告警的端到端触发：**在服务端副本上**破坏运行中的数据库，看告警是否发出（主测试库不受影响） |
+| `save_failure_test.py` | 验证「保存异常」告警的端到端触发：**在服务端副本上**独占锁住统计库（`BEGIN EXCLUSIVE`），让后台写入线程拿到 `SQLITE_BUSY` 并进入降级状态，看告警是否发出。**不改动任何文件**，主测试库不受影响 |
 | `experiment-no-mod.ps1` | 对照实验：摘掉本 Mod 的 jar 起服，验证假人能否正常上线 |
 | `mc_client.py` | **未完成的实验工具**：最小 1.21.11 协议客户端骨架，尚未联调通过，不要当成可用工具 |
 
