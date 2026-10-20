@@ -16,10 +16,12 @@
     alert   低生命值告警 → 恢复通知（端到端）
     stall   指标停滞告警（观察窗口 5 分钟）
     metrics 七类增强指标的采集
+    offline 意外离线告警（订阅者是**另一个**玩家）
 """
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import sqlite3
@@ -38,7 +40,15 @@ for _stream in (sys.stdout, sys.stderr):
         pass
 
 DB = os.path.join(os.path.dirname(HERE), "server", "world", "themisstats", "stats.db")
+USERCACHE = os.path.join(os.path.dirname(HERE), "server", "usercache.json")
 BOT = "bot_a"
+# 第二个假人：它当订阅者。「意外离线」告警是在被观察对象下线的那一刻发出的，
+# 收件人必须在那一刻还在线，所以订阅者不能是被观察对象自己。
+#
+# 这个名字必须在服务端的 usercache.json 里（也就是它以前进过服）：
+# Carpet 的假人是**先取档案再创建**的，本机连不上 Mojang 的档案服务，
+# 取不到档案的假人根本不会被创建，而命令连报错都不打印。
+SUB = "Bot_B"
 
 # Carpet 的 `player <名字> look <方向>` 与坐标轴的对应关系：
 #   north = -Z，south = +Z，east = +X，west = -X
@@ -79,11 +89,82 @@ def query(sql: str, args: tuple = ()) -> list[tuple]:
     raise RuntimeError("打不开统计库：%s" % last)
 
 
+def profile_cached(name: str) -> bool:
+    """Whether the profile of the name is in the server's user cache.
+
+    A Carpet fake player is created **after** its profile was fetched. This environment
+    cannot reach the Mojang session server, so the fetch fails, the fake player is never
+    created - and the command does not even print an error. Only names that are already
+    in the user cache (that is: names that have been on the server before) can be summoned.
+    """
+    try:
+        with open(USERCACHE, "r", encoding="utf-8") as handle:
+            entries = json.load(handle)
+    except (OSError, ValueError):
+        return False
+    return any(str(entry.get("name", "")).lower() == name.lower() for entry in entries)
+
+
 def bot_uuid() -> str:
-    rows = query("SELECT uuid FROM account WHERE current_name = ?", (BOT,))
-    if not rows:
-        raise RuntimeError("库里找不到 " + BOT)
-    return rows[0][0]
+    return uuid_of(BOT)
+
+
+def uuid_of(name: str, timeout: float = 30.0) -> str:
+    """Looks the account uuid of a player up in the statistics database.
+
+    The account row is written in the background when the player comes online, so the
+    lookup has to be retried for a moment.
+    """
+    deadline = time.time() + timeout
+    while True:
+        rows = query("SELECT uuid FROM account WHERE current_name = ?", (name,))
+        if rows:
+            return rows[0][0]
+        if time.time() > deadline:
+            raise RuntimeError("库里找不到 " + name)
+        time.sleep(1.0)
+
+
+def write_db(sql: str, args: tuple = ()) -> None:
+    """Writes to the statistics database from the outside.
+
+    The server writes in the background, so the write lock is not free all the time;
+    the retry loop waits for it.
+    """
+    path = DB.replace("\\", "/")
+    last = None
+    for _ in range(20):
+        try:
+            con = sqlite3.connect(path, timeout=3.0)
+            try:
+                con.execute(sql, args)
+                con.commit()
+            finally:
+                con.close()
+            return
+        except sqlite3.Error as exc:
+            last = exc
+            time.sleep(0.5)
+    raise RuntimeError("写统计库失败：%s" % last)
+
+
+def reset_alert_cooldowns() -> None:
+    """Clears the alert states of the test bots **before** the server starts.
+
+    The cooldown of one object and one reason is ten minutes and it survives a restart:
+    the alert engine reads the states into memory when it loads and afterwards never
+    lowers them again. So the states have to be cleared before the server starts, not
+    while it runs - otherwise a second run within ten minutes would be swallowed.
+    """
+    uuids = []
+    for name in (BOT, SUB):
+        rows = query("SELECT uuid FROM account WHERE current_name = ?", (name,))
+        if rows:
+            uuids.append(rows[0][0])
+    if not uuids:
+        return
+    for uuid in uuids:
+        write_db("DELETE FROM alert_state WHERE target_uuid = ?", (uuid,))
 
 
 def heal_bot(s: "Session") -> None:
@@ -181,6 +262,10 @@ class Session:
         return needle in self.log
 
     def ensure_bot(self, timeout: float = 300.0) -> bool:
+        """Makes sure the fake player is online, spawns it if it is not."""
+        return self.ensure_player(BOT, timeout)
+
+    def ensure_player(self, name: str, timeout: float = 300.0) -> bool:
         """Makes sure the fake player is online, spawns it if it is not.
 
         The Mojang profile lookup times out in this environment, so the fake player can take a
@@ -188,17 +273,31 @@ class Session:
         for the join message: the message can be missed when it arrives while another command is
         being answered.
         """
-        text = self.run("list", settle=2.0)
-        if BOT in text:
+        if name in self.online_players():
             return True
-        self.run("player %s spawn" % BOT)
+        if not profile_cached(name):
+            note("名字 %s 不在 usercache.json 里：档案取不到，假人不会被创建（命令也不报错）" % name)
+        self.run("player %s spawn" % name)
         deadline = time.time() + timeout
         while time.time() < deadline:
             time.sleep(5)
-            text = self.run("list", settle=1.0)
-            if BOT in text:
+            if name in self.online_players():
                 return True
         return False
+
+    def online_players(self) -> list[str]:
+        """The names of the players that are online right now.
+
+        Only the line that the `list` command prints is read: the rest of the log window can
+        contain the join messages of the players that are not online any more. The name list
+        is behind the **last** colon of the line, because the log line starts with a timestamp.
+        """
+        text = self.run("list", settle=1.5)
+        for line in text.splitlines():
+            if "players online" in line and "of a max of" in line:
+                tail = line.rsplit(":", 1)[-1]
+                return [name.strip() for name in tail.split(",") if name.strip()]
+        return []
 
     def clean_mobs(self) -> None:
         """Removes the mobs the previous run left behind.
@@ -625,12 +724,88 @@ def phase_metrics(s: Session) -> None:
           "增量 %s；本项需要真实客户端在合成台取结果" % delta(before, "crafted"))
 
 
+# ---------------------------------------------------------------- offline
+
+def phase_offline(s: Session) -> None:
+    """The "went offline unexpectedly" alert, end to end.
+
+    The alert is sent at the moment the watched object goes offline, so the subscriber has
+    to be online at that moment. If the subscriber is the watched object itself, it is
+    already gone when the alert is sent and never receives it - that is why this case
+    needs a **second** player as the subscriber.
+
+    The subscriber also needs the permission to receive the alert: the visibility rule
+    `themisStatsBotLocations` defaults to `owners`, so the subscriber is bound as the
+    owner of the watched object.
+    """
+    print("\n[阶段 offline] 意外离线告警", flush=True)
+    s.clean_mobs()
+    if not s.ensure_bot_alive():
+        check("phase_offline 需要被观察的假人在线", False, "假人没进服")
+        return
+    s.run("carpet themisStatsBotAlerts true")
+    target_uuid = bot_uuid()
+    if not s.ensure_player(SUB):
+        check("订阅者假人 %s 没进服" % SUB, False, "假人没进服")
+        return
+    sub_uuid = uuid_of(SUB)
+
+    text = s.run("themisstats admin bot owner %s %s" % (BOT, SUB), settle=2.5)
+    check("订阅者被绑定为被观察对象的负责人", "负责人已设置为" in text, text.strip()[-140:])
+
+    text = s.run("execute as %s run themisstats watch %s bot unexpected_offline" % (SUB, BOT),
+                 settle=2.5)
+    check("订阅者订阅了「意外离线」提醒", "已关注" in text, text.strip()[-140:])
+    rows = query("SELECT subscriber_uuid, alerts FROM watch_subscription WHERE target_uuid = ?",
+                 (target_uuid,))
+    check("订阅关系写进统计库（订阅者是另一个玩家）",
+          any(r[0] == sub_uuid and int(r[1]) == 4 for r in rows), rows)
+
+    before = query("SELECT COALESCE(MAX(id), 0) FROM alert_log")[0][0]
+    # Let the watched object go offline. The vanilla kick is tried first; Carpet may swallow
+    # it, because its fake connections ignore most disconnect packets.
+    s.run("kick %s" % BOT, settle=2.0)
+    method = "kick"
+    if BOT in s.online_players():
+        note("原版 kick 没有让假人下线，改用 Carpet 的 /player <名> kill")
+        s.run("player %s kill" % BOT, settle=2.0)
+        method = "player kill"
+        time.sleep(3)
+    check("被观察的假人已经下线（%s）" % method, BOT not in s.online_players(),
+          "玩家列表里还有它")
+    note("断开方式：%s" % method)
+
+    fired = []
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        time.sleep(2)
+        rows = query("SELECT reason, message, subscriber_uuid FROM alert_log "
+                     "WHERE id > ? AND reason = 'unexpected_offline'", (before,))
+        if rows:
+            fired = rows
+            break
+    check("意外离线告警已发出并落库", bool(fired), fired)
+    if fired:
+        check("告警发给了订阅者（不是被观察对象自己）", fired[0][2] == sub_uuid, fired[0][2])
+        check("告警内容写明对象已离线", "已离线" in fired[0][1], fired[0][1][:140])
+    rows = query("SELECT end_reason FROM session WHERE uuid = ? ORDER BY start_wall DESC LIMIT 1",
+                 (target_uuid,))
+    check("会话结束原因落库（管理员移除 / 原因未知）",
+          bool(rows) and rows[0][0] in ("admin_removal", "unknown"), rows)
+
+    # Clean up: the subscription is removed and the fake player is summoned again, so that the
+    # other phases still have their player.
+    s.run("execute as %s run themisstats unwatch %s bot" % (SUB, BOT), settle=1.5)
+    s.run("player %s spawn" % BOT, settle=2.0)
+
+
 PHASES = {
     "basic": phase_basic,
     "watch": phase_watch,
     "alert": phase_alert,
     "stall": phase_stall,
     "metrics": phase_metrics,
+    "offline": phase_offline,
 }
 
 
@@ -642,6 +817,9 @@ def main(argv: list[str]) -> int:
     if unknown:
         print("未知阶段：%s" % ", ".join(unknown), file=sys.stderr)
         return 2
+    # The alert cooldowns are cleared before the server starts: the alert engine reads them
+    # into memory when it loads and never lowers them again.
+    reset_alert_cooldowns()
     session = Session()
     session.start()
     try:

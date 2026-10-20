@@ -1,6 +1,6 @@
 # 验收矩阵（P0 + P1 + P2）
 
-日期：2026-10-21（第三轮：**五个阶段全流程**脚本化实测；第二轮为同日早些时候的定点实测，第一轮为 2026-10-20）
+日期：2026-10-21（第四轮：**六个阶段全流程**脚本化实测，告警五类全部端到端触发；第三轮为同日早些时候的五阶段实测，第二轮为定点实测，第一轮为 2026-10-20）
 版本：Themis Stats 0.1.0（P0 全部 ＋ P1 运行告警与增强指标 ＋ P2 查询接口与显式导入）
 测试环境：Minecraft Java **1.21.11**（Fabric Loader 0.19.5，Fabric API 0.141.6+1.21.11，Carpet 1.4.194，Java 21）
 测试服务端：`server/`（隔离测试世界，`online-mode=false`，`level-seed=themisstats`）
@@ -137,9 +137,9 @@ referenced directly`），于是**玩家第一次受到伤害时服务端直接�
 ### 0-B. 端到端自测脚本（第二轮新增）
 
 `tools/e2e_test.py` 用**服务端控制台的标准输入**驱动测试服务端（命令以「控制台」身份执行，
-输出直接写进服务端日志可以逐条核对），并直接断言统计库里的数字。分五个阶段：
+输出直接写进服务端日志可以逐条核对），并直接断言统计库里的数字。分六个阶段：
 
-**第三轮全流程结果：41 / 41 全部通过**（`python tools/e2e_test.py basic watch metrics alert stall`）。
+**第四轮全流程结果：49 / 49 全部通过**（`python tools/e2e_test.py`，六个阶段）。
 
 | 阶段 | 覆盖 |
 | --- | --- |
@@ -148,13 +148,18 @@ referenced directly`），于是**玩家第一次受到伤害时服务端直接�
 | `metrics` | 七类增强指标的采集 |
 | `alert` | 低生命值告警 → 恢复通知、工具低耐久告警 → 恢复通知（端到端，含 60 秒宽限期） |
 | `stall` | 指定统计停滞告警（5 分钟观察窗口） |
+| `offline` | **意外离线告警**：订阅者是另一个玩家，被观察对象下线时告警落库（端到端） |
+
+> 脚本在**起服之前**会清掉测试假人的告警状态（`alert_state`）。同一个对象同一种原因的冷却是
+> 10 分钟，而且**跨重启保留**：告警引擎在加载时把冷却读进内存，之后只会变高不会变低，
+> 所以不清掉的话，10 分钟内重跑会被冷却挡掉（表现为「用例无理由地不触发」）。
 
 > RCON 也能驱动服务端（`tools/rcon.py`），但 RCON 的来源是一个**一次性缓冲区**，
 > 读不到后台线程延迟返回的查询结果，所以**内容核对走控制台**，数据核对走统计库。
 
-### 0-B.1 脚本化自测踩到的三个原版／Carpet 机制（都靠实测定位）
+### 0-B.1 脚本化自测踩到的原版／Carpet 机制（都靠实测定位）
 
-这三件事都不是本 Mod 的问题，但每一个都能让用例「看起来像功能坏了」：
+这些都不是本 Mod 的问题，但每一个都能让用例「看起来像功能坏了」：
 
 1. **Carpet 一次性动作的执行时机**。`/player <名字> use once` 这类一次性动作在**实体 tick 期间**执行
    （`EntityPlayerActionPack#tick`），而控制台命令是在**该 tick 结束后**才被清空执行的
@@ -170,6 +175,15 @@ referenced directly`），于是**玩家第一次受到伤害时服务端直接�
    而 `/player <名字> drop` 本身也是**一次性动作**（下一个 tick 才执行），
    所以「丢完立刻清掉落物」写在同一条指令链里也没用——`kill` 会先于动作执行。
    **正解**：每次丢弃前用 `item replace` 重新铺好一组**已知数量**的物品。
+5. **原版 `/kick` 踢不掉 Carpet 假人**。Carpet 的假人连接重写了 `disconnect(Component)`，
+   只处理「闲置」和「重复登录」两种断开消息，其余一律**吞掉**，所以原版 `/kick` 对假人毫无效果——
+   假人还在在线列表里，命令也没有任何报错。
+   **正解**：用 Carpet 自己的 `/player <名字> kill` 让假人下线（走 `EntityPlayerMPFake#kill(Level)`）。
+6. **新建的假人取不到档案就静默消失**。`EntityPlayerMPFake#createFake` 是**先取档案再创建**的：
+   档案取不到时 `whenCompleteAsync` 的异常分支直接 `return`，**连一行报错都不打印**，
+   命令看起来成功了，人却没来。本机连不上 Mojang 的档案服务，
+   所以只有 `server/usercache.json` 里**已经缓存过的名字**（也就是以前进过服的名字）能被召唤，
+   而且召唤要等约 70 秒（网络超时）。
 
 另外两个容易踩空的地方（都不是失败原因，写下来免得下次重查）：
 `PiglinAi#canAdmire` 看的不是手臂姿态而是 **Brain 里的 `ADMIRING_ITEM` / `ADMIRING_DISABLED` 记忆**
@@ -219,9 +233,9 @@ referenced directly`），于是**玩家第一次受到伤害时服务端直接�
 
 | 编号 | 场景 | 状态 | 证据 |
 | --- | --- | --- | --- |
-| A31 | 运行告警：五类提醒、10 分钟冷却、60 秒宽限期、两次采样确认、恢复只发一次、只发给有权限的订阅者 | **四类已自动验证（端到端）／一类未执行** | 端到端实测（2026-10-21，`tools/e2e_test.py alert stall` 阶段，服务端真实执行，`alert_log` 逐条核对）：① **低生命值**：满血假人打掉 15 点血（剩 5 点）→ `alert_log` 出现 `low_health`，消息「【Themis Stats】bot_a 的生命值已连续两次低于 6.0（当前 5.0）」，`alert_state.active=1`；回血后出现 `low_health_recovered`，消息「【Themis Stats】bot_a 的「低生命值」状态已恢复。」② **工具低耐久**：主手铁镐剩余 2% → `low_durability`，消息「【Themis Stats】bot_a 的主手工具 minecraft:iron_pickaxe 剩余耐久 2%（阈值 10%）」；换上新镐后出现 `low_durability_recovered`，消息「【Themis Stats】bot_a 的「工具低耐久」状态已恢复。」③ **指定统计停滞**：5 分钟窗口内挖掘量不增长 → `metric_stall`，消息「【Themis Stats】bot_a 在最近 5 分钟的有效采集窗口内，指定指标「挖掘量」没有增长（当前 5）。这只说明观察期内该指标无增长，不能据此判断机器是否故障。」④ **保存异常**：另开一个连接 `BEGIN EXCLUSIVE` 独占锁住统计库，服务端的后台写入线程随即报 `[SQLITE_BUSY] The database file is locked` 并进入降级状态，日志出现「【Themis Stats】统计写入进入降级状态：数据库提交失败：…」与告警消息「【Themis Stats】统计数据无法提交：保存异常：…（最近一次错误 …）。统计模块已进入降级状态，期间的增量可能存在缺口。」，`/themisstats admin status` 的「写入状态」同步变成「保存异常：…」。**在服务端副本上做**（`tools/save_failure_test.py`），主测试库不受影响。**未执行**：**意外离线**（订阅者本人就是被观察对象，它自己掉线后收不到发给自己的离线告警，需要第二个真实玩家）。存储与掩码另有 `WatchRepositoryTest`（11 个用例）与 `AlertTypeTest`（7 个用例）覆盖 |
+| A31 | 运行告警：五类提醒、10 分钟冷却、60 秒宽限期、两次采样确认、恢复只发一次、只发给有权限的订阅者 | **五类已自动验证（端到端）** | 端到端实测（2026-10-21，`tools/e2e_test.py alert stall offline` 阶段，服务端真实执行，`alert_log` 逐条核对）：① **低生命值**：满血假人打掉 15 点血（剩 5 点）→ `alert_log` 出现 `low_health`，消息「【Themis Stats】bot_a 的生命值已连续两次低于 6.0（当前 5.0）」，`alert_state.active=1`；回血后出现 `low_health_recovered`，消息「【Themis Stats】bot_a 的「低生命值」状态已恢复。」② **工具低耐久**：主手铁镐剩余 2% → `low_durability`，消息「【Themis Stats】bot_a 的主手工具 minecraft:iron_pickaxe 剩余耐久 2%（阈值 10%）」；换上新镐后出现 `low_durability_recovered`，消息「【Themis Stats】bot_a 的「工具低耐久」状态已恢复。」③ **指定统计停滞**：5 分钟窗口内挖掘量不增长 → `metric_stall`，消息「【Themis Stats】bot_a 在最近 5 分钟的有效采集窗口内，指定指标「挖掘量」没有增长（当前 5）。这只说明观察期内该指标无增长，不能据此判断机器是否故障。」④ **保存异常**：另开一个连接 `BEGIN EXCLUSIVE` 独占锁住统计库，服务端的后台写入线程随即报 `[SQLITE_BUSY] The database file is locked` 并进入降级状态，日志出现「【Themis Stats】统计写入进入降级状态：数据库提交失败：…」与告警消息「【Themis Stats】统计数据无法提交：保存异常：…（最近一次错误 …）。统计模块已进入降级状态，期间的增量可能存在缺口。」，`/themisstats admin status` 的「写入状态」同步变成「保存异常：…」。**在服务端副本上做**（`tools/save_failure_test.py`），主测试库不受影响。⑤ **意外离线**：订阅者必须是**另一个**玩家——被观察对象自己下线之后，就收不到发给自己的离线告警了。实测用第二个假人 `Bot_B` 当订阅者：先把它绑定成 `bot_a` 的**负责人**（可见性规则 `themisStatsBotLocations` 默认是 `owners`，只有负责人或管理员收得到这个对象的告警），再由它订阅 `unexpected_offline`；随后让 `bot_a` 下线 → `alert_log` 出现 `unexpected_offline`，**收件人是 `Bot_B` 而不是被观察对象自己**，消息「【Themis Stats】bot_a 已离线，原因：管理员移除。如为管理员操作请忽略。」，对应的会话 `end_reason=admin_removal`。两点实测细节：原版 `/kick` **踢不掉** Carpet 假人（Carpet 把断开包吞了，假人还在在线列表里），必须用 `/player <名字> kill`；而「原因未知」这一分支在本机**无法触发**（假人的每条下线路径都带可观察的原因），所以端到端覆盖的是「管理员移除」这一原因。存储与掩码另有 `WatchRepositoryTest`（11 个用例）与 `AlertTypeTest`（7 个用例）覆盖 |
 | A32 | 细分榜：按方块／实体／移动方式拆分；诊断榜可指定模式、分类与维度 | **已自动验证（范围与公式）／服务端实测** | `StatsRepositoryScopeTest`（8 个用例）验证维度、分类、模式三种过滤，以及**细分榜的合计等于同范围的总计**。服务端实测：`/themisstats fine mining minecraft:stone bot` 输出「细分榜 · 挖掘量 · minecraft:stone · 假人 / #1 bot_a 5 / #2 Bench_A 3」；`/themisstats admin board mining bot survival minecraft:stone minecraft:overworld` 输出「模式：survival；维度：minecraft:overworld；分类：minecraft:stone / #1 bot_a 5 / #2 Bench_A 3」 |
-| A33 | 七类增强指标：伤害、移动、制作、拾取、丢弃、猪灵交换 | **六项已自动验证（服务端实测）／`crafted` 未执行** | 服务端逐项实测（`tools/e2e_test.py metrics`，2026-10-21，完整回归 **41/41 全通过**）：`damage_taken` 增量 **5**；`damage_dealt` 增量 **5**（**自校验**：与僵尸实际掉的血对齐，因为 `damage` 命令回报的是**请求值**，护甲减免、无敌帧、环境伤害都会让实际扣血偏离请求值，所以这一项不比「5」，比「实际掉了几点」）；`movement` 增量 **14877**（千分之一方块）；`dropped` 丢一个记 **1**（主手 5 个石头只丢 1 个）、丢整组记 **7**（主手 7 个泥土整组丢掉，**修掉了「按整组计数」的缺陷**）；`picked_up` 增量 **1**（`minecraft:diamond`）；`placement` 增量 **1**；`piglin_barters` 增量 **1**（分类 `minecraft:piglin`，并且**先验证猪灵副手真的拿到了金锭**，再确认指标落库）。**`crafted` 仍未执行**：计数点在 `ResultSlot#onTake`，只能由真实客户端在合成台／物品栏里点击取结果才会触发，命令与假人都做不到 |
+| A33 | 七类增强指标：伤害、移动、制作、拾取、丢弃、猪灵交换 | **六项已自动验证（服务端实测）／`crafted` 未执行** | 服务端逐项实测（`tools/e2e_test.py metrics`，2026-10-21，完整回归 **49/49 全通过**）：`damage_taken` 增量 **5**；`damage_dealt` 增量 **5**（**自校验**：与僵尸实际掉的血对齐，因为 `damage` 命令回报的是**请求值**，护甲减免、无敌帧、环境伤害都会让实际扣血偏离请求值，所以这一项不比「5」，比「实际掉了几点」）；`movement` 增量 **14877**（千分之一方块）；`dropped` 丢一个记 **1**（主手 5 个石头只丢 1 个）、丢整组记 **7**（主手 7 个泥土整组丢掉，**修掉了「按整组计数」的缺陷**）；`picked_up` 增量 **1**（`minecraft:diamond`）；`placement` 增量 **1**；`piglin_barters` 增量 **1**（分类 `minecraft:piglin`，并且**先验证猪灵副手真的拿到了金锭**，再确认指标落库）。**`crafted` 仍未执行**：计数点在 `ResultSlot#onTake`，只能由真实客户端在合成台／物品栏里点击取结果才会触发，命令与假人都做不到 |
 | A34 | 会话对比：最近两次会话的时长、指标与每真实分钟速率 | **已自动验证（服务端实测）** | `/themisstats compare Bot_A bot mining` 输出：较新一次在线 1 分 11 秒、较早一次 14 分 48 秒、时长差 13 分 36 秒、挖掘量 1 → 2（+1）、每真实分钟速率 0.14 → 1.67 次/分钟 |
 
 ### 2.1 P1 的规则
@@ -334,8 +348,13 @@ referenced directly`），于是**玩家第一次受到伤害时服务端直接�
 **仍然存在的环境限制**（只影响新建假人的速度，不影响功能）：
 
 - 本机 JVM 到 `sessionserver.mojang.com` 的请求会超时。Carpet 建假人时要先取游戏档案，
-  所以**第一次**建假人约要 2 分钟；档案缓存之后（`server/usercache.json`）就是秒进。
+  所以建一个假人要等一次档案解析（实测 3～70 秒不等，取决于缓存命中情况）；
+  档案缓存在 `server/usercache.json` 里。
   脚本会轮询玩家列表直到假人出现，超时会明确打印，不会假装成功。
+- **名字不在 `server/usercache.json` 里的假人根本不会出现，而且命令不报错**：
+  `EntityPlayerMPFake#createFake` 先取档案再创建，档案取不到时异常分支直接返回，
+  一行日志都不留。脚本因此只用**进过服的名字**（`bot_a`、`Bot_B`），
+  并在召唤前检查 `usercache.json`，缺档案时明确打印提示。
 - 因此**规格里的 20 真人／100 假人负载对照无法达到**（见第 8 节）。
 
 **第二轮已经在真实服务端上跑出来的部分**（`tools/e2e_test.py`）：
@@ -350,6 +369,7 @@ referenced directly`），于是**玩家第一次受到伤害时服务端直接�
 | 低生命值告警 | `alert_log` 出现 `low_health`：「【Themis Stats】bot_a 的生命值已连续两次低于 6.0（当前 5.0）」；恢复后出现 `low_health_recovered`：「【Themis Stats】bot_a 的「低生命值」状态已恢复。」 |
 | 工具低耐久告警 | 主手铁镐剩余 2% → `low_durability`：「【Themis Stats】bot_a 的主手工具 minecraft:iron_pickaxe 剩余耐久 2%（阈值 10%）」；换新镐后 → `low_durability_recovered`：「【Themis Stats】bot_a 的「工具低耐久」状态已恢复。」 |
 | 指标停滞告警 | 5 分钟窗口后 `metric_stall`：「【Themis Stats】bot_a 在最近 5 分钟的有效采集窗口内，指定指标「挖掘量」没有增长（当前 5）。这只说明观察期内该指标无增长，不能据此判断机器是否故障。」 |
+| 意外离线告警 | 第二个假人 `Bot_B` 当订阅者（先绑定为 `bot_a` 的**负责人**，只有负责人／管理员收得到告警）→ `bot_a` 下线 → `alert_log` 出现 `unexpected_offline`，**收件人是 `Bot_B` 而不是被观察对象自己**：「【Themis Stats】bot_a 已离线，原因：管理员移除。如为管理员操作请忽略。」，对应会话 `end_reason=admin_removal` |
 | 保存异常告警 | 独占锁住统计库 → 写入线程「统计写入进入降级状态：数据库提交失败：[SQLITE_BUSY] The database file is locked」；告警消息「【Themis Stats】统计数据无法提交：保存异常：…（最近一次错误 …）。统计模块已进入降级状态，期间的增量可能存在缺口。」（在服务端副本上做） |
 | 七类增强指标 | 见 A33；`crafted` 除外（需要真实客户端界面） |
 | 猪灵交换 | 假人右键命中猪灵 → 猪灵副手拿到 `minecraft:gold_ingot`；等猪灵欣赏完（119 刻）换出物品后，`piglin_barters` 增量 **1**（分类 `minecraft:piglin`） |
@@ -418,8 +438,8 @@ referenced directly`），于是**玩家第一次受到伤害时服务端直接�
 # 单元测试（真实 SQLite，验证公开值公式与排名规则）
 ./gradlew test
 
-# 第二轮新增的端到端自测（自动起服、自动收尾、逐项 PASS/FAIL）
-python tools/e2e_test.py                 # 五个阶段全跑
+# 端到端自测（自动起服、自动收尾、逐项 PASS/FAIL）
+python tools/e2e_test.py                 # 六个阶段全跑
 python tools/e2e_test.py basic watch     # 只跑指定阶段
 python tools/e2e_test.py --keep-server   # 测完不关服务端
 

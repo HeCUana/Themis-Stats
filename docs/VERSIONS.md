@@ -110,6 +110,35 @@ Carpet 的一次性动作（`/player <名字> use once`、`drop`、`dropStack` �
 所以「丢整组时记了几个」这种断言，必须在每次丢弃前用 `item replace` 重新铺好一组**已知数量**的物品，
 否则主手数量会自己涨回去，断言变成「碰巧对上」。
 
+### 让假人下线：原版 `/kick` 不管用（实测确认）
+
+Carpet 的假人连接 `NetHandlerPlayServerFake` 重写了 `disconnect(Component)`，
+**只处理**「闲置」（`multiplayer.disconnect.idling`）与「重复登录」（`multiplayer.disconnect.duplicate_login`）
+两种断开消息，其余一律**吞掉**。所以原版 `/kick <假人>` 对假人**没有任何效果**：
+假人还在在线列表里，命令也不报错。
+
+真正能让假人下线的是 Carpet 自己的 `/player <名字> kill`，它走
+`EntityPlayerMPFake#kill(ServerLevel)` → `kill(Component)` → `connection.onDisconnect(...)`，
+再由 Carpet 的 `ServerGamePacketListenerImpl_coreMixin` 触发
+`CarpetServer#onPlayerLoggedOut` → 扩展钩子 `CarpetExtension#onPlayerLoggedOut`。
+本 Mod 的会话结算与「意外离线」告警都挂在这个钩子上，所以**假人下线模组一定看得到**。
+
+> 结束原因的区分（本 Mod 的 `EntityPlayerMPFakeMixin` 负责标记）：
+> - `/player <名字> kill` → 标记 `ADMIN_REMOVAL`（管理员移除）；
+> - `kill(Component)`（只有「闲置」「重复登录」两条路径会走到）→ **不标记**，
+>   结算时按假人身份落成 `UNKNOWN`（原因未知）。
+> 假人在本机只能走前一条路径，所以「原因未知」这一分支**本地无法触发**。
+
+### 假人取不到档案就静默消失
+
+`EntityPlayerMPFake#createFake` 是**先取档案再创建**的：
+`fetchGameProfile` → `ResolvableProfile#resolveProfile(server.services().profileResolver())`，
+取到档案之后才 `placeNewPlayer`。取档案失败时 `whenCompleteAsync` 的异常分支**直接 return**，
+**连一行日志都不打印**，命令看起来成功了，人却没来。
+
+档案缓存在 `server/usercache.json`（名字 → UUID）。本机到 Mojang 的档案服务会超时，
+所以只有**已经进过服的名字**能被召唤，而且要等一次超时（实测 3～70 秒）。
+
 ---
 
 ## 4. Minecraft 1.21.11 的 API 核对
