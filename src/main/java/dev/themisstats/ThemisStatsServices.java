@@ -41,6 +41,8 @@ public final class ThemisStatsServices implements AutoCloseable {
     private final MetricPipeline pipeline;
     private final SessionManager sessions;
     private final PermissionService permissions;
+    private final dev.themisstats.storage.WatchRepository watch;
+    private final dev.themisstats.alert.AlertEngine alertEngine;
     private final RuleState rules;
     private final ElytraTracker elytra;
     private final SidebarService sidebar;
@@ -63,6 +65,8 @@ public final class ThemisStatsServices implements AutoCloseable {
         this.pipeline = new MetricPipeline(writer);
         this.sessions = new SessionManager(pipeline, accounts, bootId);
         this.permissions = new PermissionService(rules, accounts);
+        this.watch = new dev.themisstats.storage.WatchRepository(database.connection());
+        this.alertEngine = new dev.themisstats.alert.AlertEngine(rules, watch);
         this.elytra = new ElytraTracker();
         this.sidebar = new SidebarService(rules, permissions, accounts, this);
         this.botMonitor = new BotMonitor(rules, sessions);
@@ -119,6 +123,21 @@ public final class ThemisStatsServices implements AutoCloseable {
 
     public PermissionService permissions() {
         return permissions;
+    }
+
+    /** @return the run alert subscriptions and states */
+    public dev.themisstats.storage.WatchRepository watch() {
+        return watch;
+    }
+
+    /** @return the run alert engine */
+    public dev.themisstats.alert.AlertEngine alertEngine() {
+        return alertEngine;
+    }
+
+    /** @return the server the services belong to */
+    public net.minecraft.server.MinecraftServer server() {
+        return server;
     }
 
     public RuleState rules() {

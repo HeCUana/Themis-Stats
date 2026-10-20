@@ -35,6 +35,10 @@ public final class AccountRepository {
                               String purpose, String note, long updatedWall) {
     }
 
+    /** One member of a project with its totals. */
+    public record ProjectMember(UUID uuid, String name, long value, long rank) {
+    }
+
     /** One administrator adjustment. */
     public record AdjustmentInfo(long id, UUID uuid, Identity identity, String metric, String category,
                                   String dimension, String gameMode, long delta, String reason,
@@ -457,6 +461,46 @@ public final class AccountRepository {
             ps.executeUpdate();
         } catch (SQLException e) {
             throw new StatsRepository.StorageException("记录负责人变更失败", e);
+        }
+    }
+
+    /**
+     * @return the objects that belong to the given project
+     */
+    public List<BotProfile> projectMembers(String project) {
+        String sql = "SELECT uuid, identity, owner_uuid, owner_name, purpose, note, updated_wall "
+                + "FROM bot_profile WHERE project = ? ORDER BY updated_wall DESC";
+        List<BotProfile> result = new ArrayList<>();
+        try (PreparedStatement ps = connection.prepareStatement(sql)) {
+            ps.setString(1, project);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    result.add(new BotProfile(UUID.fromString(rs.getString(1)), Identity.byId(rs.getString(2)),
+                            rs.getString(3), rs.getString(4), rs.getString(5), rs.getString(6),
+                            rs.getLong(7)));
+                }
+            }
+        } catch (SQLException e) {
+            throw new StatsRepository.StorageException("查询工程成员失败", e);
+        }
+        return result;
+    }
+
+    /**
+     * Stores the project label of an object.
+     */
+    public void saveProject(UUID uuid, Identity identity, String project) {
+        try (PreparedStatement ps = connection.prepareStatement(
+                "INSERT INTO bot_profile(uuid, identity, project, updated_wall) VALUES (?,?,?,?) "
+                        + "ON CONFLICT(uuid, identity) DO UPDATE SET project = excluded.project, "
+                        + "updated_wall = excluded.updated_wall")) {
+            ps.setString(1, uuid.toString());
+            ps.setString(2, identity.id());
+            ps.setString(3, project);
+            ps.setLong(4, System.currentTimeMillis());
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            throw new StatsRepository.StorageException("保存工程标签失败", e);
         }
     }
 

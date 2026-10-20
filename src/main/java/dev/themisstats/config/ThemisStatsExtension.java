@@ -26,7 +26,7 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * Carpet extension entry point of Themis Stats.
  *
- * <p><strong>Rule registration.</strong> The 15 Themis Stats rules are registered into Carpet's
+ * <p><strong>Rule registration.</strong> The 18 Themis Stats rules are registered into Carpet's
  * <em>main</em> settings manager - the very same manager that backs {@code /carpet} - inside
  * {@link #onGameStarted()}. This is deliberately <em>not</em> done through
  * {@link CarpetExtension#extensionSettingsManager()}: returning a custom manager would create a
@@ -56,7 +56,7 @@ public final class ThemisStatsExtension implements CarpetExtension {
         if (CarpetServer.settingsManager == null) {
             throw new IllegalStateException("Themis Stats requires Carpet: CarpetServer.settingsManager is null");
         }
-        // Register the 15 rules into Carpet's MAIN settings manager => /carpet manages them.
+        // Register the 18 rules into Carpet's MAIN settings manager => /carpet manages them.
         CarpetServer.settingsManager.parseSettingsClass(ThemisStatsRules.class);
         // Observe rule changes so that caches and visibility are invalidated immediately.
         CarpetServer.settingsManager.registerRuleObserver(this.ruleState::onRuleChanged);
@@ -118,6 +118,9 @@ public final class ThemisStatsExtension implements CarpetExtension {
                 session.advanceTo(System.nanoTime());
             });
             services.botMonitor().sampleIfDue(server);
+            // The alerts read the health and the durability on the game thread; everything that
+            // needs the database runs in the background.
+            services.alertEngine().evaluateOnGameThread(server.getPlayerList().getPlayers());
             refreshSidebars(server);
         }
         // Every five seconds: hand the buffered increments over to the background writer.
@@ -126,6 +129,8 @@ public final class ThemisStatsExtension implements CarpetExtension {
             // The personal display preferences are read in the background, the game thread only
             // reads the in memory cache.
             services.runInBackground(services.sidebar()::refreshPreferences);
+            // The alert subscriptions are reloaded in the background as well.
+            services.alertEngine().refresh();
         }
     }
 
@@ -153,6 +158,17 @@ public final class ThemisStatsExtension implements CarpetExtension {
     public void registerCommands(com.mojang.brigadier.CommandDispatcher<CommandSourceStack> dispatcher,
                                  CommandBuildContext buildContext) {
         command.register(dispatcher, buildContext);
+    }
+
+    /**
+     * Registers the query functions for Carpet's Scarpet.
+     *
+     * <p>This is Carpet's own extension hook, so the functions behave like every other Scarpet
+     * function and are available in every script of the server.</p>
+     */
+    @Override
+    public void scarpetApi(carpet.script.CarpetExpression expression) {
+        dev.themisstats.scarpet.ThemisStatsScarpet.register(expression.getExpr());
     }
 
     @Override

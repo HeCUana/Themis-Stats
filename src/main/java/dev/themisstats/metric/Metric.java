@@ -20,13 +20,23 @@ public enum Metric {
     DEATHS("deaths", "死亡数", Unit.COUNT, true),
     VILLAGER_TRADES("villager_trades", "村民交易", Unit.COUNT, false),
     FISHING("fishing", "钓获次数", Unit.COUNT, false),
-    ELYTRA_DISTANCE("elytra_distance", "鞘翅距离", Unit.MILLI_BLOCK, false);
+    ELYTRA_DISTANCE("elytra_distance", "鞘翅距离", Unit.MILLI_BLOCK, false),
+
+    // ---- P1 增强指标 ----
+    DAMAGE_DEALT("damage_dealt", "造成伤害", Unit.DAMAGE, true),
+    DAMAGE_TAKEN("damage_taken", "受到伤害", Unit.DAMAGE, true),
+    MOVEMENT("movement", "其他移动", Unit.MILLI_BLOCK, true),
+    CRAFTED("crafted", "制作物品", Unit.COUNT, true),
+    PICKED_UP("picked_up", "拾取物品", Unit.COUNT, true),
+    DROPPED("dropped", "丢弃物品", Unit.COUNT, true),
+    PIGLIN_BARTERS("piglin_barters", "猪灵交换", Unit.COUNT, false);
 
     /** The physical unit a metric is measured in. */
     public enum Unit {
         COUNT("次"),
         MILLISECOND("毫秒"),
-        MILLI_BLOCK("千分之一方块");
+        MILLI_BLOCK("千分之一方块"),
+        DAMAGE("点生命值");
 
         private final String display;
 
@@ -71,6 +81,23 @@ public enum Metric {
     /** @return whether this metric is a behaviour metric that can be filtered by game mode */
     public boolean isModeClassified() {
         return this != ONLINE;
+    }
+
+    /**
+     * @return whether this metric is a P1 enhancement metric
+     */
+    public boolean isEnhanced() {
+        return switch (this) {
+            case DAMAGE_DEALT, DAMAGE_TAKEN, MOVEMENT, CRAFTED, PICKED_UP, DROPPED, PIGLIN_BARTERS -> true;
+            default -> false;
+        };
+    }
+
+    /**
+     * @return whether this metric can be broken down into a per block / per entity leaderboard
+     */
+    public boolean supportsFineBoards() {
+        return hasCategory;
     }
 
     public static Metric byId(String id) {

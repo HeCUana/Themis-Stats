@@ -14,6 +14,8 @@ import net.minecraft.commands.Commands;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -56,6 +58,31 @@ public final class AdminCommands {
                 .then(Commands.literal("status").executes(this::status))
                 .then(Commands.literal("flush").executes(this::flush))
                 .then(Commands.literal("backup").executes(this::backup))
+                .then(Commands.literal("board")
+                        .then(boardMetric.then(boardIdentity.then(boardModes
+                                .executes(ctx -> adminBoard(ctx, "", "", 1))
+                                .then(boardCategory
+                                        .executes(ctx -> adminBoard(ctx,
+                                                StringArgumentType.getString(ctx, "category"), "", 1))
+                                        .then(boardDimension
+                                                .executes(ctx -> adminBoard(ctx,
+                                                        StringArgumentType.getString(ctx, "category"),
+                                                        StringArgumentType.getString(ctx, "dimension"), 1))
+                                                .then(boardPage
+                                                        .executes(ctx -> adminBoard(ctx,
+                                                                StringArgumentType.getString(ctx, "category"),
+                                                                StringArgumentType.getString(ctx, "dimension"),
+                                                                IntegerArgumentType.getInteger(ctx,
+                                                                        "page"))))))))))
+                .then(Commands.literal("import")
+                        .then(Commands.argument("file", StringArgumentType.greedyString())
+                                .executes(ctx -> importData(ctx))))
+                .then(Commands.literal("imported")
+                        .then(Commands.argument("metric", StringArgumentType.word())
+                                .suggests((ctx, builder) -> SharedSuggestions.suggestMetrics(builder))
+                                .then(Commands.argument("identity", StringArgumentType.word())
+                                        .suggests((ctx, builder) -> SharedSuggestions.suggestIdentities(builder))
+                                        .executes(ctx -> importedBoard(ctx))))))
                 .then(Commands.literal("audit")
                         .executes(ctx -> audit(ctx, 1))
                         .then(Commands.argument("page", IntegerArgumentType.integer(1))
@@ -87,7 +114,11 @@ public final class AdminCommands {
                                         .then(Commands.argument("operation", StringArgumentType.word())
                                                 .suggests((ctx, builder) -> SharedSuggestions.suggestTagOperations(builder))
                                                 .then(Commands.argument("tag", StringArgumentType.word())
-                                                        .executes(this::setTag))))))
+                                                        .executes(this::setTag)))))
+                        .then(Commands.literal("project")
+                                .then(Commands.argument("target", StringArgumentType.string())
+                                        .then(Commands.argument("project", StringArgumentType.greedyString())
+                                                .executes(this::setProject))))
                 .then(Commands.literal("exclude")
                         .then(Commands.argument("target", StringArgumentType.string())
                                 .then(Commands.argument("identity", StringArgumentType.word())
@@ -619,6 +650,171 @@ public final class AdminCommands {
         return 1;
     }
 
+    /**
+     * The leaderboard with an explicit mode list, for administrators.
+     *
+     * <p>The public leaderboard only shows the modes that {@code themisStatsPublicModes} allows.
+     * An administrator may look at any mode combination, which is what a diagnostic needs.</p>
+     */
+    private int adminBoard(CommandContext<CommandSourceStack> ctx, String category, String dimension,
+                           int page) {
+        CommandSourceStack source = ctx.getSource();
+        Metric metric = Metric.byId(StringArgumentType.getString(ctx, "metric"));
+        if (metric == null) {
+            source.sendFailure(CommandTexts.error("未知指标。"));
+            return 0;
+        }
+        Identity identity = Identity.byId(StringArgumentType.getString(ctx, "identity"));
+        if (identity == Identity.UNKNOWN) {
+            source.sendFailure(CommandTexts.error("未知身份组。"));
+            return 0;
+        }
+        List<String> modes = new ArrayList<>();
+        for (String part : StringArgumentType.getString(ctx, "modes").split(",")) {
+            String trimmed = part.trim().toLowerCase(java.util.Locale.ROOT);
+            if (!trimmed.isEmpty()) {
+                modes.add(trimmed);
+            }
+        }
+        int pageNumber = page;
+
+        runAdmin(source, () -> {
+            List<Component> lines = new ArrayList<>();
+            var scope = dev.themisstats.storage.StatsRepository.Scope.of(metric, identity, modes, dimension,
+                    category);
+            var entries = services().stats().board(scope, pageNumber, 10);
+            lines.add(CommandTexts.title("诊断榜 · " + metric.displayName() + " · " + identity.displayName()));
+            lines.add(CommandTexts.hint("模式：" + (modes.isEmpty() ? "全部" : String.join("、", modes))
+                    + "；维度：" + (dimension.isEmpty() ? "全部" : dimension)
+                    + "；分类：" + (category.isEmpty() ? "全部" : category)));
+            if (entries.isEmpty()) {
+                lines.add(CommandTexts.line("该范围内暂无数据。"));
+            } else {
+                for (var entry : entries) {
+                    lines.add(Component.literal("§8#" + entry.rank() + " §f" + entry.name() + " §8- §a"
+                            + dev.themisstats.util.Numbers.full(entry.value())));
+                }
+                lines.add(CommandTexts.hint("共 " + services().stats().boardSize(scope) + " 个对象。"));
+            }
+            return lines;
+        });
+        return 1;
+    }
+
+    private static final com.mojang.brigadier.builder.RequiredArgumentBuilder<CommandSourceStack, String>
+            boardMetric = Commands.argument("metric", StringArgumentType.word());
+    private static final com.mojang.brigadier.builder.RequiredArgumentBuilder<CommandSourceStack, String>
+            boardIdentity = Commands.argument("identity", StringArgumentType.word());
+    private static final com.mojang.brigadier.builder.RequiredArgumentBuilder<CommandSourceStack, String>
+            boardModes = Commands.argument("modes", StringArgumentType.word());
+    private static final com.mojang.brigadier.builder.RequiredArgumentBuilder<CommandSourceStack, String>
+            boardCategory = Commands.argument("category", TokenArgumentType.INSTANCE);
+    private static final com.mojang.brigadier.builder.RequiredArgumentBuilder<CommandSourceStack, String>
+            boardDimension = Commands.argument("dimension", TokenArgumentType.INSTANCE);
+    private static final com.mojang.brigadier.builder.RequiredArgumentBuilder<CommandSourceStack, Integer>
+            boardPage = Commands.argument("page", IntegerArgumentType.integer(1));
+
+    /**
+     * Imports a CSV file with historical data.
+     *
+     * <p>The import is always explicit and the imported rows keep the origin
+     * {@code imported}, so they never mix with the data this mod collected itself and never end up
+     * on a public leaderboard on their own.</p>
+     */
+    private int importData(CommandContext<CommandSourceStack> ctx) {
+        CommandSourceStack source = ctx.getSource();
+        String fileName = StringArgumentType.getString(ctx, "file");
+        Path file = Path.of(fileName);
+        if (!Files.isRegularFile(file)) {
+            source.sendFailure(CommandTexts.error("找不到文件：" + fileName));
+            return 0;
+        }
+        runAdmin(source, () -> {
+            var result = new dev.themisstats.storage.ImportService(services().database().connection())
+                    .importCsv(file, operator(source));
+            services().watch().logImport(fileName, result.imported(), result.skipped(),
+                    operator(source), System.currentTimeMillis());
+            List<Component> lines = new ArrayList<>();
+            lines.add(CommandTexts.ok("导入完成：写入 " + result.imported() + " 行，跳过 " + result.skipped()
+                    + " 行。"));
+            lines.add(CommandTexts.hint("导入的数据标记为「导入」来源，不会自动进入公共榜；"
+                    + "它代表的是你写进文件里的内容，不是过去真人与假人行为的还原。"));
+            int shown = 0;
+            for (String problem : result.problems()) {
+                if (shown++ >= 5) {
+                    lines.add(CommandTexts.hint("……还有更多问题，见 /themisstats admin audit。"));
+                    break;
+                }
+                lines.add(CommandTexts.error(problem));
+            }
+            return lines;
+        });
+        return 1;
+    }
+
+    /**
+     * Shows what an explicit import really wrote.
+     *
+     * <p>The imported history lives in its own rows, so this view never mixes with the collected
+     * data and never appears on a public leaderboard.</p>
+     */
+    private int importedBoard(CommandContext<CommandSourceStack> ctx) {
+        CommandSourceStack source = ctx.getSource();
+        Metric metric = Metric.byId(StringArgumentType.getString(ctx, "metric"));
+        if (metric == null) {
+            source.sendFailure(CommandTexts.error("未知指标。"));
+            return 0;
+        }
+        Identity identity = Identity.byId(StringArgumentType.getString(ctx, "identity"));
+        if (identity == Identity.UNKNOWN) {
+            source.sendFailure(CommandTexts.error("未知身份组。"));
+            return 0;
+        }
+        runAdmin(source, () -> {
+            var scope = dev.themisstats.storage.StatsRepository.Scope.of(metric, identity, List.of(), "", "");
+            var entries = services().stats().importedRanked(scope);
+            List<Component> lines = new ArrayList<>();
+            lines.add(CommandTexts.title("导入历史 · " + metric.displayName() + " · " + identity.displayName()));
+            if (entries.isEmpty()) {
+                lines.add(CommandTexts.line("还没有任何导入数据。"));
+            } else {
+                for (var entry : entries) {
+                    lines.add(Component.literal("§8- §f" + entry.name() + " §8- §a"
+                            + dev.themisstats.util.Numbers.full(entry.value())));
+                }
+                lines.add(CommandTexts.hint("共 " + entries.size() + " 个对象有导入历史。"
+                        + "这些数值不会自动进入公共榜。"));
+            }
+            return lines;
+        });
+        return 1;
+    }
+
+    /**
+     * Puts an object into a project, so that the output of a whole farm can be looked at.
+     */
+    private int setProject(CommandContext<CommandSourceStack> ctx) {
+        CommandSourceStack source = ctx.getSource();
+        String targetInput = StringArgumentType.getString(ctx, "target");
+        if (!requireTarget(source, targetInput)) {
+            return 0;
+        }
+        Resolved target = resolve(targetInput, source);
+        String project = StringArgumentType.getString(ctx, "project").trim();
+        if (project.isEmpty() || project.length() > 40) {
+            source.sendFailure(CommandTexts.error("工程名长度必须在 1 到 40 之间。"));
+            return 0;
+        }
+        for (Identity identity : new Identity[]{Identity.BOT, Identity.SHADOW}) {
+            services().accounts().saveProject(target.uuid(), identity, project);
+        }
+        services().accounts().audit("bot.project", target.name(), "工程 -> " + project, operator(source),
+                System.currentTimeMillis());
+        source.sendSuccess(() -> CommandTexts.ok("已把 " + target.name() + " 归入工程「" + project + "」。"), false);
+        source.sendSuccess(() -> CommandTexts.hint("查看工程累计：/themisstats project " + project), false);
+        return 1;
+    }
+
     // ------------------------------------------------------------------ adjustment scope
 
     private record Cell(String category, String dimension, String gameMode, long value) {
@@ -627,8 +823,10 @@ public final class AdminCommands {
     private List<Cell> findCells(UUID uuid, Identity identity, Metric metric, String category,
                                   String dimension, String gameMode) {
         List<Cell> result = new ArrayList<>();
+        // Only the collected cells are listed: an adjustment changes the public value, and the
+        // public value is built from the collected cells. The imported history stays untouched.
         String sql = "SELECT category, dimension, game_mode, SUM(value) FROM total "
-                + "WHERE uuid = ? AND identity = ? AND metric = ? "
+                + "WHERE uuid = ? AND identity = ? AND metric = ? AND source = 'collected' "
                 + "AND (? = '' OR category = ?) AND (? = '' OR dimension = ?) AND (? = '' OR game_mode = ?) "
                 + "GROUP BY category, dimension, game_mode ORDER BY SUM(value) DESC";
         try (var ps = services().database().connection().prepareStatement(sql)) {

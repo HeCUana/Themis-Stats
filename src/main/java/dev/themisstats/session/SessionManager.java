@@ -81,7 +81,12 @@ public final class SessionManager {
                 dimension, player.getX(), player.getY(), player.getZ(), true);
         LiveSession liveSession = new LiveSession(session);
         live.put(player, liveSession);
-        accounts.touchAccount(uuid, name, now);
+        // The account row is written in the background: the game thread must not wait for a disk
+        // write when a player comes online.
+        var services = dev.themisstats.ThemisStatsRuntime.services();
+        if (services != null) {
+            services.runInBackground(() -> accounts.touchAccount(uuid, name, now));
+        }
         ThemisStats.LOGGER.info("[ThemisStats] 会话开始：{}（{}）身份={} 会话={}",
                 name, uuid, identity.displayName(), session.id());
         return liveSession;
@@ -146,6 +151,8 @@ public final class SessionManager {
             session.updateLastKnown(player.level().dimension().identifier().toString(),
                     player.getX(), player.getY(), player.getZ());
         }
+        notifyOffline(session, reason, player);
+        notifySummary(session, reason, player);
         SessionUpdate update = new SessionUpdate(session.id(), session.bootId(), session.accountUuid(),
                 session.identity().id(), session.startWallMillis(), wall, reason.id(), wall, nanos,
                 session.onlineMillis(), session.collectedMillis(),
@@ -156,6 +163,64 @@ public final class SessionManager {
         ThemisStats.LOGGER.info("[ThemisStats] 会话结束：{} 身份={} 结束情况={} 在线={}ms 有效采集={}ms",
                 session.accountUuid(), session.identity().displayName(), reason.displayName(),
                 session.onlineMillis(), session.collectedMillis());
+    }
+
+    /**
+     * Reports that the object went offline, so that the subscribers can be told.
+     */
+    private void notifyOffline(Session session, SessionEndReason reason, ServerPlayer player) {
+        var services = dev.themisstats.ThemisStatsRuntime.services();
+        if (services == null || player == null) {
+            return;
+        }
+        services.alertEngine().reportOffline(session.accountUuid(), session.identity(),
+                player.getGameProfile().name(), reason);
+    }
+
+    /**
+     * Sends the session end summary to the owners that asked for it.
+     *
+     * <p>The lookup runs in the background, because it reads the database. The message itself goes
+     * back to the game thread.</p>
+     */
+    private void notifySummary(Session session, SessionEndReason reason, ServerPlayer player) {
+        var services = dev.themisstats.ThemisStatsRuntime.services();
+        if (services == null || services.server() == null || player == null) {
+            return;
+        }
+        UUID ownerUuid = session.accountUuid();
+        String objectName = player.getGameProfile().name();
+        long onlineMillis = session.onlineMillis();
+        long collectedMillis = session.collectedMillis();
+        String sessionId = session.id();
+        services.runInBackground(() -> {
+            var profile = services.accounts().botProfile(ownerUuid, session.identity());
+            if (profile == null || profile.ownerUuid() == null) {
+                return;
+            }
+            UUID owner;
+            try {
+                owner = UUID.fromString(profile.ownerUuid());
+            } catch (IllegalArgumentException e) {
+                return;
+            }
+            if (!services.watch().summaryEnabled(owner)) {
+                return;
+            }
+            String message = String.format(
+                    "【Themis Stats】%s 的会话已结束（%s）：在线 %s，有效采集 %s。会话 ID %s。",
+                    objectName, reason.displayName(),
+                    dev.themisstats.util.Numbers.duration(onlineMillis),
+                    dev.themisstats.util.Numbers.duration(collectedMillis),
+                    sessionId.substring(0, 8));
+            services.server().execute(() -> {
+                ServerPlayer online = services.server().getPlayerList().getPlayer(owner);
+                if (online != null) {
+                    online.sendSystemMessage(net.minecraft.network.chat.Component.literal(message)
+                            .withStyle(net.minecraft.ChatFormatting.GOLD));
+                }
+            });
+        });
     }
 
     // ------------------------------------------------------------------ access

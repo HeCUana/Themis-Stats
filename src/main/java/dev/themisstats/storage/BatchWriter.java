@@ -292,9 +292,9 @@ public final class BatchWriter implements AutoCloseable {
             return;
         }
         try (PreparedStatement ps = connection.prepareStatement(
-                "INSERT INTO total(uuid, identity, metric, category, dimension, game_mode, value) "
-                        + "VALUES (?,?,?,?,?,?,?) "
-                        + "ON CONFLICT(uuid, identity, metric, category, dimension, game_mode) "
+                "INSERT INTO total(uuid, identity, metric, category, dimension, game_mode, value, source) "
+                        + "VALUES (?,?,?,?,?,?,?,'collected') "
+                        + "ON CONFLICT(uuid, identity, metric, category, dimension, game_mode, source) "
                         + "DO UPDATE SET value = value + excluded.value")) {
             for (MetricIncrement increment : increments) {
                 ps.setString(1, increment.accountUuid().toString());
@@ -383,9 +383,9 @@ public final class BatchWriter implements AutoCloseable {
         long onlineMillis = update.collectedMillis();
         if (onlineMillis > 0) {
             try (PreparedStatement ps = connection.prepareStatement(
-                    "INSERT INTO total(uuid, identity, metric, category, dimension, game_mode, value) "
-                            + "VALUES (?,?,?,'','','',?) "
-                            + "ON CONFLICT(uuid, identity, metric, category, dimension, game_mode) "
+                    "INSERT INTO total(uuid, identity, metric, category, dimension, game_mode, value, source) "
+                            + "VALUES (?,?,?,'','','',?,'collected') "
+                            + "ON CONFLICT(uuid, identity, metric, category, dimension, game_mode, source) "
                             + "DO UPDATE SET value = value + excluded.value")) {
                 ps.setString(1, update.accountUuid().toString());
                 ps.setString(2, update.identity());

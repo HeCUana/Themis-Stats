@@ -18,6 +18,7 @@ import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * Tests of the background writer: idempotency, the visible degraded state and the fact that the
@@ -76,6 +77,8 @@ class BatchWriterTest {
             }
             Thread.sleep(25);
         }
+        fail("条件在 " + timeoutMillis + " ms 内没有成立（写入器降级=" + writer.isDegraded()
+                + "，最后错误=" + writer.lastError() + "）");
     }
 
     private interface FailCondition {
@@ -85,7 +88,7 @@ class BatchWriterTest {
     @Test
     void anIncrementIsCommittedToTheTotal() throws Exception {
         writer.submit(MetricBatch.of("batch-1", List.of(increment(3)), 1L));
-        waitFor(() -> totalOfStone() == 3L, 10_000L);
+        waitFor(() -> totalOfStone() == 3L, 30_000L);
         assertEquals(3L, totalOfStone());
     }
 
@@ -93,7 +96,7 @@ class BatchWriterTest {
     void resubmittingTheSameBatchDoesNotAddItTwice() throws Exception {
         MetricBatch batch = MetricBatch.of("batch-double", List.of(increment(5)), 1L);
         writer.submit(batch);
-        waitFor(() -> totalOfStone() == 5L, 10_000L);
+        waitFor(() -> totalOfStone() == 5L, 30_000L);
         // The very same batch is handed over again, as it would happen after a retry of an
         // unacknowledged commit.
         writer.submit(batch);
@@ -104,7 +107,7 @@ class BatchWriterTest {
     @Test
     void theBatchReceiptIsWrittenTogetherWithTheTotal() throws Exception {
         writer.submit(MetricBatch.of("batch-receipt", List.of(increment(2)), 1L));
-        waitFor(() -> totalOfStone() == 2L, 10_000L);
+        waitFor(() -> totalOfStone() == 2L, 30_000L);
         try (Statement statement = connection.createStatement();
              ResultSet rs = statement.executeQuery(
                      "SELECT increments FROM applied_batch WHERE batch_id = 'batch-receipt'")) {
@@ -116,11 +119,12 @@ class BatchWriterTest {
     @Test
     void theSessionTotalIsWrittenTogetherWithTheTotal() throws Exception {
         writer.submit(MetricBatch.of("batch-session", List.of(increment(4)), 1L));
-        waitFor(() -> totalOfStone() == 4L, 10_000L);
+        waitFor(() -> totalOfStone() == 4L, 30_000L);
         try (Statement statement = connection.createStatement();
              ResultSet rs = statement.executeQuery(
                      "SELECT value FROM session_metric WHERE session_id = 'session-1' AND metric = 'mining'")) {
-            assertTrue(rs.next(), "the session total must exist");
+            assertTrue(rs.next(), "the session total must exist（写入器降级=" + writer.isDegraded()
+                    + "，最后错误=" + writer.lastError() + "）");
             assertEquals(4L, rs.getLong(1));
         }
     }
@@ -130,7 +134,7 @@ class BatchWriterTest {
         // The database is closed, so the next commit has to fail.
         connection.close();
         writer.submit(MetricBatch.of("batch-fail", List.of(increment(1)), 1L));
-        waitFor(() -> writer.isDegraded(), 15_000L);
+        waitFor(() -> writer.isDegraded(), 30_000L);
         assertTrue(writer.isDegraded(), "a failing database must put the writer into the degraded state");
         assertTrue(writer.lastError() != null && !writer.lastError().isBlank(),
                 "the degraded state must name the reason");

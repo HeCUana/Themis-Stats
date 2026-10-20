@@ -8,9 +8,9 @@
 - Carpet 规则前缀与分类：`themisStats`
 - 世界内数据目录：`<世界根目录>/themisstats/`
 - 数据库：`stats.db`（内置 SQLite，无需另外部署数据库）
-- 首个版本：`0.1.0`（P0 功能范围）
+- 首个版本：`0.1.0`（P0 全部功能 ＋ P1 运行告警与增强指标 ＋ P2 查询接口与显式导入）
 
-本 Mod **只在服务端安装**。原版客户端无需安装任何东西，即可使用 P0 的全部功能。
+本 Mod **只在服务端安装**。原版客户端无需安装任何东西，即可使用全部已实现的功能。
 
 ---
 
@@ -41,7 +41,7 @@
 3. 启动服务端。启动日志中会出现：
 
    ```
-   [ThemisStats] registered the themisStats rule category (15 rules) in the /carpet manager
+   [ThemisStats] registered the themisStats rule category (18 rules) in the /carpet manager
    [ThemisStats] statistics module ready, database <世界>/themisstats/stats.db
    ```
 
@@ -52,7 +52,7 @@
 
 ---
 
-## 3. Carpet 规则（15 条，注册在 `/carpet` 主管理器下）
+## 3. Carpet 规则（18 条，注册在 `/carpet` 主管理器下）
 
 所有规则都注册进 Carpet 的**主**规则管理器，因此由 `/carpet` 统一管理，并遵循 Carpet 自身的
 `setDefault` / `removeDefault` 持久化语义（持久化文件为世界根目录下的 `carpet.conf`）。
@@ -74,6 +74,9 @@
 | `themisStatsBotMonitor` | 布尔 | `true` | 是否采样假人运行状态 |
 | `themisStatsBotSampleSeconds` | 整数 | `2` | 假人状态采样间隔，有效范围 1～30 秒 |
 | `themisStatsBotLocations` | 字符串 | `owners` | 精确位置／装备／受限运行细节的可见范围（`ops` / `owners` / `all`） |
+| `themisStatsBotAlerts` | 布尔 | `false` | 是否发送运行告警。**默认关闭**；订阅可以在关闭状态下先存好，打开后立即生效 |
+| `themisStatsPublicModes` | 字符串 | `survival,adventure` | 进入公共榜的游戏模式。创造与旁观仍然被采集，只是不公开 |
+| `themisStatsStallPurposes` | 字符串 | `mining,combat,use,custom` | 允许触发「指定统计停滞」告警的假人用途。`loader` 默认不在其中，因为只保持加载的假人本来就应该闲着 |
 
 **非法值一律拒绝，旧值保留。** 例如 `/carpet themisStatsCarouselSeconds 1` 会被拒绝，
 `themisStatsCarouselSeconds` 保持原值。
@@ -100,7 +103,7 @@
 
 ## 4. 统计口径
 
-八个 P0 指标，全部按 **发生时的身份** 分账。真人、普通假人、Shadow 即使共用同一个 UUID 也**不会混账**。
+十五类指标（P0 八类 ＋ P1 七类增强指标），全部按 **发生时的身份** 分账。真人、普通假人、Shadow 即使共用同一个 UUID 也**不会混账**。
 
 | 指标 ID | 名称 | 计数口径 | 细分维度 |
 | --- | --- | --- | --- |
@@ -112,6 +115,13 @@
 | `villager_trades` | 村民交易 | 一次**成功执行**的交易计 1 | 维度、模式 |
 | `fishing` | 钓获次数 | 一次**成功钓获**计 1 | 维度、模式 |
 | `elytra_distance` | 鞘翅距离 | 鞘翅滑翔时的连续有效位移 | 维度、模式 |
+| `damage_dealt` | 造成伤害 | **血量实际减少量**（已扣除护甲、抵抗、吸收生命与图腾的结算结果） | 目标实体 ID、维度、模式 |
+| `damage_taken` | 受到伤害 | **血量实际减少量**，过量伤害按实际扣血计 | 伤害来源类别、维度、模式 |
+| `movement` | 其他移动 | 仅统计 `MoverType.SELF` 的位移（传送与活塞推动不计） | 走／游／骑乘／飞行、维度、模式 |
+| `crafted` | 制作物品 | 从合成结果格**取出**一次计 1 | 物品 ID、维度、模式 |
+| `picked_up` | 拾取物品 | 背包在拾取**之前**比拾取**之后**多出的物品件数 | 物品 ID、维度、模式 |
+| `dropped` | 丢弃物品 | 主动丢弃一次计 1 | 物品 ID、维度、模式 |
+| `piglin_barters` | 猪灵交换 | 猪灵**收到**物品并完成一次交换计 1 | 维度、模式 |
 
 ### 明确的边界
 
@@ -128,7 +138,13 @@
 - **鞘翅距离**：跨维度不���；单个 tick 位移超过 **20 方块**视为传送或加载跳变，不计入。
   小于该阈值的传送会被计入，这是已知的漏计边界，可用 `/themisstats explain elytra_distance` 查看。
 - **模式过滤**：有模式分类的行为指标，公共榜默认只包含 **生存 ＋ 冒险**；创造与旁观的数据仍然被采集和保存，
-  可以通过管理员的详细查询查看。`online` **不**按模式过滤，它统计的是各身份实际被采集的在线时长。
+  可以通过管理员的详细查询查看。公共模式范围由 `themisStatsPublicModes` 决定。`online` **不**按模式过滤，
+  它统计的是各身份实际被采集的在线时长。
+- **伤害**：按**血量实际减少量**计，因此护甲、抵抗效果、吸收生命与图腾的影响已经算在里面，
+  溢出伤害（超出最大血量的部分）也不会被算成更大的数字。
+- **移动**：只统计自身位移，传送、活塞推动与潜影盒搬运不计；分类为走／游／骑乘／飞行。
+- **拾取**：按背包实际多出来的件数计，不会因为物品又立刻被消耗而算错。
+- **丢弃**与**猪灵交换**都按**一次行为**计 1，不是按物品数量计。
 
 ### 公开累计的计算公式
 
@@ -139,6 +155,9 @@
 排行榜、全服总计、与前一名的差距、导出**全部**使用这一条公式，因此它们之间不会互相矛盾。
 管理员调整落在具体的明细范围（对象 ＋ 身份 ＋ 指标 ＋ 分类 ＋ 维度 ＋ 模式）上，总计由明细汇总得出，
 所以方块／实体分类与总计始终一致。原始会话统计与管理员调整是**分开保存**的。
+
+**显式导入的历史数据不参与这条公式**。导入的行带自己的来源标记，与本 Mod 自己采集的行是**两行**，
+因此公共榜、细分榜与导出都不会因为一次导入而变大。只有明确要求「含导入」的范围才会把它们算进去。
 
 ### 排名
 
@@ -171,6 +190,11 @@
 | `/themisstats sessions <对象> <身份> [页码]` | 会话列表 |
 | `/themisstats session <会话ID>` | 指定会话详情 |
 | `/themisstats explain <指标>` | 口径、单位、过滤条件与采集起点 |
+| `/themisstats fine <指标> <分类> [身份] [页码]` | 细分榜：按方块／实体／移动方式拆分后的累计榜 |
+| `/themisstats project <工程> [指标] [页码]` | 工程计量：按工程汇总旗下对象在该指标上的产出 |
+| `/themisstats watch <对象> <身份> [提醒] [指标]` | 订阅某个对象的运行告警 |
+| `/themisstats unwatch <对象> <身份>` | 取消订阅 |
+| `/themisstats compare <对象> <身份> [指标]` | 对比该对象最近两次会话的时长、指标与每真实分钟速率 |
 
 `<对象>` 可以是唯一的名字或 UUID。名字对应多个 UUID 时，命令会列出所有候选并要求用 UUID 指定，
 **不会按名字合并**。离线对象来自本地已记录的资料，不需要访问外部账号服务。
@@ -192,6 +216,10 @@
 | `/themisstats admin export <指标> <身份> <csv\|json>` | 导出统计 |
 | `/themisstats admin backup` | 创建一致的统计数据库备份 |
 | `/themisstats admin confirm <令牌>` | 确认当前待执行的变更 |
+| `/themisstats admin board <指标> <身份> <模式> [分类] [维度] [页码]` | 诊断榜：可指定任意模式、分类与维度，不受公共模式范围限制 |
+| `/themisstats admin imported <指标> <身份>` | 查看显式导入进来的历史数据（与采集数据分开显示） |
+| `/themisstats admin import <文件>` | 显式导入 CSV（见下文「显式导入」） |
+| `/themisstats admin bot project <对象> <工程>` | 把对象归入一个工程 |
 
 **数据修正流程**：`admin adjust` 只做预览，列出受影响的具体明细范围与变化后的数值，并给出一个
 **确认令牌**；执行 `/themisstats admin confirm <令牌>` 才会真正写入。令牌绑定操作者、参数与 60 秒过期时间，
@@ -251,7 +279,97 @@
 
 ---
 
-## 9. 数据保存
+## 9. 运行告警（P1）
+
+告警**默认关闭**（`themisStatsBotAlerts=false`）。订阅可以先存好，打开开关后立即生效。
+
+| 提醒 ID | 名称 | 触发条件 |
+| --- | --- | --- |
+| `low_health` | 低生命值 | 连续 **2 次**采样确认血量低于阈值（默认 6.0） |
+| `low_durability` | 工具低耐久 | 主手可损耗工具剩余耐久低于阈值（默认 10%） |
+| `unexpected_offline` | 意外离线 | 被关注的对象离线，且原因不是正常停服 |
+| `metric_stall` | 指定统计停滞 | 指定的指标在**有效采集窗口**内没有增长 |
+| `save_failure` | 保存异常 | 统计写入进入降级状态（只发给管理员） |
+
+规则：
+
+- **只发给订阅者**，并且订阅者本人也必须有查看该对象运行细节的权限（负责人永远可以收到自己对象的告警）。
+- 同一对象、同一原因**冷却 10 分钟**。
+- 条件恢复后**只发一次**恢复通知。
+- 新上线的对象有 **60 秒宽限期**，宽限期内不判断。
+- 「指定统计停滞」**只说明「观察期内该指标无增长」，不会断言机器故障**。
+  采集被暂停时判定中止，窗口重建；低 TPS 会让每分钟的实际次数变少，所以告警一定会写明观察窗口的长度。
+- 告警**不会**清空背包、不会补工具、不会传送对象，也不会改动它的动作。
+
+命令：`/themisstats watch <对象> <身份> [提醒] [指标]`、`/themisstats unwatch <对象> <身份>`。
+`metric_stall` 必须写明要观察的指标，例如：
+
+```
+/themisstats watch Bot_A bot metric_stall mining
+```
+
+---
+
+## 10. 显式数据导入（P2）
+
+- 导入**永远是显式的**：没有管理员指向一个文件，就不会有任何数据进入数据库。
+- 本 Mod **不会**自动导入原版统计文件，也不会把原版累计总数当作已分账的数据。
+- CSV 列：`uuid,name,identity,metric,category,dimension,gameMode,value`
+  （`#` 开头是注释行，空行忽略；读不懂的行会被跳过并在结果里逐条报告，不会中断整次导入）。
+- 导入的行带 `imported` 来源标记，与本 Mod 自己采集的行是**两行**，
+  因此**公共榜、细分榜与导出都不会因为一次导入而变大**。
+- `/themisstats admin imported <指标> <身份>` 可以单独查看导入进来的内容。
+- 导入代表的是**管理员写进文件里的内容**，不是过去真人与假人行为的还原。
+
+---
+
+## 11. 查询接口（P2）
+
+**Java 接口**（给其他 Mod 用，`dev.themisstats.api.ThemisStatsApi`）：
+
+```java
+ThemisStatsApi.Result result = ThemisStatsApi.top(Metric.MINING, Identity.BOT, 1, 10);
+for (ThemisStatsApi.Entry entry : result.entries()) {
+    System.out.println(entry.name() + ": " + entry.value());
+}
+long mine = ThemisStatsApi.valueOf(uuid, Metric.MINING, Identity.BOT);
+Map<String, Long> blocks = ThemisStatsApi.breakdown(uuid, Metric.MINING, Identity.BOT);
+Map<Identity, Integer> online = ThemisStatsApi.onlineCounts();
+```
+
+这些方法会读数据库，因此**必须在后台线程调用**。
+
+**Scarpet 函数**（经 Carpet 官方的扩展钩子注册，行为与其他 Scarpet 函数一致）：
+
+```
+themis_stats('mining', 'bot')                -> 整个身份组的公开累计
+themis_stats_of('mining', 'bot', 'bot_a')    -> 单个对象的公开累计
+themis_stats_top('mining', 'bot', 1)         -> 第一页的 [名字, 数值] 列表
+```
+
+三个函数与命令使用**同一条**公开公式，因此脚本看到的数字与聊天命令看到的数字**永远一致**。
+
+---
+
+## 12. 权限节点（P2）
+
+所有权限判断都集中在一处，节点名如下：
+
+| 节点 | 含义 |
+| --- | --- |
+| `themisstats.query` | 查询公开统计 |
+| `themisstats.view_details` | 查看对象的运行细节 |
+| `themisstats.sidebar` | 修改自己的侧栏偏好 |
+| `themisstats.watch` | 订阅运行告警 |
+| `themisstats.export` | 导出统计 |
+| `themisstats.manage` | 修正数据与管理对象 |
+
+**没有权限插件时**由 OP 等级决定：管理员（OP ≥ 2）拥有全部节点，普通玩家只有 `query` 与 `sidebar`。
+装了权限插件时可以用 `PermissionNodes.setProvider(...)` 接入自己的实现，命令层不用改。
+
+---
+
+## 13. 数据保存
 
 - 位置：`<世界根目录>/themisstats/stats.db`，每个世界独立，不与其他世界混用。
 - 计数使用 64 位整数；时间使用毫秒，距离使用千分之一方块，**不会**用 `int` 截断。
@@ -280,7 +398,7 @@
 
 ---
 
-## 10. 故障与诊断
+## 14. 故障与诊断
 
 | 现象 | 处理 |
 | --- | --- |
@@ -293,7 +411,7 @@
 
 ---
 
-## 11. 性能
+## 15. 性能
 
 小规模 A/B 对照（同一台机器、同一世界、1 个持续挖矿的假人、固定 120 秒窗口）：
 
@@ -313,26 +431,27 @@
 
 ---
 
-## 12. 未实现（P1 / P2）
+## 16. 仍未实现
 
-P0 **不包含**以下内容，本 Mod 也没有注册任何对应的假命令或无效开关：
+以下内容**没有**在当前版本里实现，本 Mod 也没有注册任何对应的假命令或无效开关来假装它们可用：
 
-- P1：运行告警订阅（`themisStatsBotAlerts`）、`watch` / `unwatch` / `compare` 命令、
-  细分方块／实体排行榜、维度与模式筛选的公开榜、`damage_dealt` / `damage_taken` / `movement` /
-  `crafted` / `picked_up` / `dropped` / `piglin_barters` 七类增强指标、负责人结束摘要。
-- P2：显式数据导入、Scarlet／Java 查询接口、权限插件节点、工程与机器计量扩展。
+- 原版客户端侧的完整交互（登录、侧栏渲染、按钮点击、分页跳转、分享预览）。
+- 真人玩家的登录／下线与 Shadow 切换：Carpet 1.4.194 禁止给假人创建 Shadow，因此**无法用假人复现**。
+- 鞘翅飞行的真实距离累计（公式与边界已有自动测试，真实飞行需要客户端）。
+- 村民交易与钓获的**完整**交互路径（钩子本身已按 1.21.11 源码实现并核对，钓获的端到端交互未实测）。
+- 规格建议的 **20 真人／100 假人** 负载对照（本机无法达到，见第 15 节）。
 
 本 Mod 不自动禁用 `/player`，不批量修改 Carpet 的其他规则，不自动导入原版统计文件，
 也不把原版累计总数当作已分账的数据。
 
 ---
 
-## 13. 从源码构建与验证
+## 17. 从源码构建与验证
 
 ```bash
 # 需要 JDK 21
 ./gradlew build          # 产物：build/libs/themis-stats-0.1.0.jar
-./gradlew test           # 单元测试：公开值公式、竞争排名、排除与模式过滤
+./gradlew test           # 单元测试：公开值公式、竞争排名、排除与模式过滤、导入、告警存储、迁移
 ./gradlew runServer      # 启动一个隔离的测试服务端
 ```
 
@@ -345,6 +464,9 @@ Windows 下使用 `gradlew.bat`。构建产物包含内置的 SQLite 驱动，�
 ```powershell
 # 启动隔离测试服务端，生成真实数据并逐条执行命令
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/run-server-test4.ps1
+
+# P1/P2：运行告警、细分榜、对比、导入、工程计量与 Scarpet 查询
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/run-p1p2-test.ps1
 
 # 击杀归属的定向验证
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/run-kill-test.ps1

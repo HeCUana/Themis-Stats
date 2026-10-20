@@ -6,6 +6,8 @@ import dev.themisstats.storage.AccountRepository;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.server.level.ServerPlayer;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -86,6 +88,15 @@ public final class PermissionService {
      *         details of the given object
      */
     public boolean canViewBotDetails(CommandSourceStack source, UUID uuid, Identity identity) {
+        return canViewBotDetails(source, uuid, identity, ownerOf(uuid));
+    }
+
+    /**
+     * @return whether the source may see the details of the object, with an owner that was already
+     *         looked up, so that this method never touches the database
+     */
+    public boolean canViewBotDetails(CommandSourceStack source, UUID uuid, Identity identity,
+                                     UUID ownerUuid) {
         if (isAdmin(source)) {
             return true;
         }
@@ -96,7 +107,7 @@ public final class PermissionService {
         return switch (visibility) {
             case "all" -> true;
             case "ops" -> net.minecraft.commands.Commands.LEVEL_MODERATORS.check(source.permissions());
-            case "owners" -> isOwner(source, uuid);
+            case "owners" -> isOwner(source, uuid, ownerUuid);
             default -> false;
         };
     }
@@ -105,13 +116,20 @@ public final class PermissionService {
      * @return whether the source is the registered owner of the object
      */
     public boolean isOwner(CommandSourceStack source, UUID uuid) {
-        if (source == null || source.getEntity() == null) {
+        return isOwner(source, uuid, ownerOf(uuid));
+    }
+
+    /**
+     * @return whether the source is the owner of the object, with an owner that was already looked up
+     */
+    public boolean isOwner(CommandSourceStack source, UUID uuid, UUID ownerUuid) {
+        if (source == null || source.getEntity() == null || ownerUuid == null) {
             return false;
         }
         if (!(source.getEntity() instanceof ServerPlayer player)) {
             return false;
         }
-        return player.getUUID().equals(ownerOf(uuid));
+        return player.getUUID().equals(ownerUuid);
     }
 
     /** @return the uuid of the registered owner of the object, or {@code null} */
@@ -135,6 +153,60 @@ public final class PermissionService {
         return null;
     }
 
+    /**
+     * @return whether the player may receive the run alerts of the given object
+     *
+     * <p>Only somebody who may also see the details of the object may be told about it, and the
+     * owner of the object is always allowed to. The owner binding alone never forces a
+     * subscription.</p>
+     *
+     * <p>This overload reads the owner from the database, so it belongs to a command and not to
+     * the game thread of the running server.</p>
+     */
+    public boolean canReceiveAlerts(net.minecraft.server.level.ServerPlayer player, UUID target,
+                                     Identity identity) {
+        return canReceiveAlerts(player, target, identity, ownerOf(target));
+    }
+
+    /**
+     * @return whether the player may receive the run alerts of the given object
+     *
+     * <p>This overload takes the owner that was already looked up, so it never touches the
+     * database. The run alerts use it, because they run while the server is going on and must not
+     * wait for a disk read.</p>
+     */
+    public boolean canReceiveAlerts(net.minecraft.server.level.ServerPlayer player, UUID target,
+                                     Identity identity, UUID ownerUuid) {
+        if (player == null) {
+            return false;
+        }
+        CommandSourceStack source = player.createCommandSourceStack();
+        if (isAdmin(source)) {
+            return true;
+        }
+        if (ownerUuid != null && player.getUUID().equals(ownerUuid)) {
+            return true;
+        }
+        return canViewBotDetails(source, target, identity, ownerUuid);
+    }
+
+    /**
+     * @return every online player with the administrator level
+     */
+    public List<net.minecraft.server.level.ServerPlayer> admins(
+            dev.themisstats.ThemisStatsServices services) {
+        List<net.minecraft.server.level.ServerPlayer> result = new ArrayList<>();
+        if (services == null || services.server() == null) {
+            return result;
+        }
+        for (net.minecraft.server.level.ServerPlayer player
+                : services.server().getPlayerList().getPlayers()) {
+            if (isAdmin(player.createCommandSourceStack())) {
+                result.add(player);
+            }
+        }
+        return result;
+    }
     /**
      * @return whether the source may export or back up the data
      */

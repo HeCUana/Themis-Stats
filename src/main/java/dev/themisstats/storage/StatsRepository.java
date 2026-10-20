@@ -33,16 +33,46 @@ public final class StatsRepository {
                            List<BoardEntry> above, List<BoardEntry> below) {
     }
 
-    /** The filters that define which cells a public number is computed from. */
-    public record Scope(Metric metric, Identity identity, List<String> gameModes) {
+    /**
+     * The filters that define which cells a public number is computed from.
+     *
+     * @param metric     the metric
+     * @param identity   the identity group
+     * @param gameModes  the game modes that count; empty means "not filtered by mode"
+     * @param dimension  the dimension that counts; empty means "every dimension"
+     * @param category   the block / entity / reason breakdown key; empty means "every category"
+     * @param includeImported whether the explicitly imported historical data counts as well
+     */
+    public record Scope(Metric metric, Identity identity, List<String> gameModes, String dimension,
+                        String category, boolean includeImported) {
+
+        public Scope {
+            gameModes = List.copyOf(gameModes);
+            dimension = dimension == null ? "" : dimension;
+            category = category == null ? "" : category;
+        }
 
         public static Scope of(Metric metric, Identity identity) {
             if (metric.isModeClassified()) {
                 // Behaviour metrics are public in survival + adventure by default.
-                return new Scope(metric, identity, List.of("survival", "adventure"));
+                return new Scope(metric, identity, List.of("survival", "adventure"), "", "", false);
             }
             // `online` is measured per identity and session, not per game mode.
-            return new Scope(metric, identity, List.of());
+            return new Scope(metric, identity, List.of(), "", "", false);
+        }
+
+        public static Scope of(Metric metric, Identity identity, List<String> gameModes) {
+            return new Scope(metric, identity, gameModes, "", "", false);
+        }
+
+        public static Scope of(Metric metric, Identity identity, List<String> gameModes, String dimension,
+                               String category) {
+            return new Scope(metric, identity, gameModes, dimension, category, false);
+        }
+
+        /** @return a scope that also counts the explicitly imported historical data */
+        public Scope withImported() {
+            return new Scope(metric, identity, gameModes, dimension, category, true);
         }
     }
 
@@ -94,6 +124,30 @@ public final class StatsRepository {
             }
         } catch (SQLException e) {
             throw new StorageException("查询排行榜失败", e);
+        }
+        return result;
+    }
+
+    /**
+     * @return the objects that carry explicitly imported history, ranked by the imported value
+     *
+     * <p>This is the view an administrator uses to check what an import really wrote. It never
+     * mixes with the collected data.</p>
+     */
+    public List<BoardEntry> importedRanked(Scope scope) {
+        String sql = "SELECT uuid, name, public_value FROM (" + rankedSet(scope, "imported")
+                + ") WHERE public_value > 0 ORDER BY public_value DESC, uuid ASC";
+        List<BoardEntry> result = new ArrayList<>();
+        try (PreparedStatement ps = connection.prepareStatement(sql)) {
+            bindScope(ps, scope, 1);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    result.add(new BoardEntry(UUID.fromString(rs.getString(1)), rs.getString(2),
+                            rs.getLong(3), 0));
+                }
+            }
+        } catch (SQLException e) {
+            throw new StorageException("查询导入历史失败", e);
         }
         return result;
     }
@@ -197,10 +251,23 @@ public final class StatsRepository {
 
     /**
      * @return the per category breakdown of one object, e.g. every block type it mined
+     *
+     * <p>This is the public scope, so the explicitly imported historical data is not part of it.
+     * Use {@link #categoryBreakdown(UUID, Identity, Metric, boolean)} to ask for it.</p>
      */
     public Map<String, Long> categoryBreakdown(UUID uuid, Identity identity, Metric metric) {
+        return categoryBreakdown(uuid, identity, metric, false);
+    }
+
+    /**
+     * @param includeImported whether the explicitly imported historical data counts as well
+     * @return the per category breakdown of one object
+     */
+    public Map<String, Long> categoryBreakdown(UUID uuid, Identity identity, Metric metric,
+                                                boolean includeImported) {
         String sql = "SELECT category, SUM(value) FROM total "
                 + "WHERE uuid = ? AND identity = ? AND metric = ? AND category <> '' "
+                + (includeImported ? "" : "AND source = 'collected' ")
                 + "GROUP BY category ORDER BY SUM(value) DESC";
         Map<String, Long> result = new LinkedHashMap<>();
         try (PreparedStatement ps = connection.prepareStatement(sql)) {
@@ -220,7 +287,8 @@ public final class StatsRepository {
 
     /** @return the total number of distinct objects that have any data for the metric */
     public int distinctObjects(Metric metric, Identity identity) {
-        String sql = "SELECT COUNT(DISTINCT uuid) FROM total WHERE metric = ? AND identity = ?";
+        String sql = "SELECT COUNT(DISTINCT uuid) FROM total WHERE metric = ? AND identity = ? "
+                + "AND source = 'collected'";
         try (PreparedStatement ps = connection.prepareStatement(sql)) {
             ps.setString(1, metric.id());
             ps.setString(2, identity.id());
@@ -250,11 +318,23 @@ public final class StatsRepository {
      * formula.
      */
     private String rankedSet(Scope scope) {
+        // The public scope counts what this mod collected itself. The explicitly imported history
+        // only counts when the scope asks for it.
+        return rankedSet(scope, scope.includeImported() ? null : "collected");
+    }
+
+    /**
+     * @param source the origin that counts, or {@code null} for every origin
+     */
+    private String rankedSet(Scope scope, String source) {
         StringBuilder sb = new StringBuilder();
         sb.append("SELECT t.uuid AS uuid, COALESCE(a.current_name, t.uuid) AS name, ");
         sb.append("SUM(").append(publicValueExpression()).append(") AS public_value ");
         sb.append("FROM total t LEFT JOIN account a ON a.uuid = t.uuid ");
         sb.append("WHERE ").append(boardWhere(scope));
+        if (source != null) {
+            sb.append(" AND t.source = '").append(source).append("'");
+        }
         sb.append(" GROUP BY t.uuid");
         return sb.toString();
     }
@@ -268,6 +348,12 @@ public final class StatsRepository {
             }
             sb.append(')');
         }
+        if (!scope.dimension().isEmpty()) {
+            sb.append(" AND t.dimension = ?");
+        }
+        if (!scope.category().isEmpty()) {
+            sb.append(" AND t.category = ?");
+        }
         sb.append(" AND NOT EXISTS (SELECT 1 FROM exclusion x WHERE x.uuid = t.uuid "
                 + "AND x.identity = t.identity AND x.excluded = 1)");
         return sb.toString();
@@ -278,6 +364,12 @@ public final class StatsRepository {
         ps.setString(index++, scope.identity().id());
         for (String mode : scope.gameModes()) {
             ps.setString(index++, mode);
+        }
+        if (!scope.dimension().isEmpty()) {
+            ps.setString(index++, scope.dimension());
+        }
+        if (!scope.category().isEmpty()) {
+            ps.setString(index++, scope.category());
         }
         return index;
     }

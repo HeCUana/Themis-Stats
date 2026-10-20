@@ -147,8 +147,42 @@ public final class ThemisStatsCommand {
                         .then(Commands.argument("metric", StringArgumentType.word())
                                 .suggests((ctx, builder) -> SharedSuggestions.suggestMetrics(builder))
                                 .executes(this::explain)));
+        // 工程累计：<工程名> [指标] [页码]
+        var projectName = Commands.argument("project", StringArgumentType.greedyString());
+        var projectMetric = Commands.argument("metric", StringArgumentType.word())
+                .suggests((ctx, builder) -> SharedSuggestions.suggestMetrics(builder));
+        var projectPage = Commands.argument("page", IntegerArgumentType.integer(1));
+        root.then(Commands.literal("project")
+                .then(projectName
+                        .executes(ctx -> project(ctx, Metric.MINING, 1))
+                        .then(projectMetric
+                                .executes(ctx -> project(ctx, Metric.MINING, 1))
+                                .then(projectPage
+                                        .executes(ctx -> project(ctx, Metric.MINING,
+                                                IntegerArgumentType.getInteger(ctx, "page")))))));
+
+        // 细分榜：<指标> <分类> [身份] [页码]
+        var fineMetric = Commands.argument("metric", StringArgumentType.word())
+                .suggests((ctx, builder) -> SharedSuggestions.suggestMetrics(builder));
+        var fineCategory = Commands.argument("category", TokenArgumentType.INSTANCE);
+        var fineIdentity = Commands.argument("identity", StringArgumentType.word())
+                .suggests((ctx, builder) -> SharedSuggestions.suggestIdentities(builder));
+        var finePage = Commands.argument("page", IntegerArgumentType.integer(1));
+        root.then(Commands.literal("fine")
+                .then(fineMetric.then(fineCategory
+                        .executes(ctx -> fine(ctx, Identity.HUMAN, 1))
+                        .then(fineIdentity
+                                .executes(ctx -> fine(ctx,
+                                        resolveIdentity(StringArgumentType.getString(ctx, "identity"),
+                                                Identity.HUMAN), 1))
+                                .then(finePage
+                                        .executes(ctx -> fine(ctx,
+                                                resolveIdentity(StringArgumentType.getString(ctx, "identity"),
+                                                        Identity.HUMAN),
+                                                IntegerArgumentType.getInteger(ctx, "page"))))))));
 
         adminCommands.register(root);
+        new WatchCommands().register(root);
 
         var rootNode = dispatcher.register(root);
 
@@ -738,6 +772,100 @@ public final class ThemisStatsCommand {
         return 1;
     }
 
+    /**
+     * The fine grained leaderboard: one block or entity type, optionally one dimension.
+     */
+    /**
+     * The total of a project: the objects that belong to it and the sum of their values.
+     */
+    private int project(CommandContext<CommandSourceStack> ctx, Metric metric, int page) {
+        CommandSourceStack source = ctx.getSource();
+        String name = StringArgumentType.getString(ctx, "project");
+        if (!services().permissions().canQueryPublic(source)) {
+            source.sendFailure(CommandTexts.error("公开查询当前已关闭。"));
+            return 0;
+        }
+        asyncQuery(source, () -> services().permissions().canQueryPublic(source), () -> {
+            List<Component> lines = new ArrayList<>();
+            var members = services().accounts().projectMembers(name);
+            lines.add(CommandTexts.title("工程 · " + name + " · " + metric.displayName()));
+            if (members.isEmpty()) {
+                lines.add(CommandTexts.line("这个工程还没有成员。用 "
+                        + "/themisstats admin bot project <对象> " + name + " 归入。"));
+                return lines;
+            }
+            long total = 0L;
+            List<String> rows = new ArrayList<>();
+            for (var member : members) {
+                long value = services().stats().valueOf(member.uuid(),
+                        StatsRepository.Scope.of(metric, member.identity(),
+                                services().rules().publicModes()));
+                total += value;
+                rows.add(member.uuid() + "|" + member.identity().id() + "|" + value);
+            }
+            for (String row : rows) {
+                String[] parts = row.split("\\|");
+                if (parts.length < 3) {
+                    continue;
+                }
+                var account = services().accounts().accountByUuid(java.util.UUID.fromString(parts[0]));
+                lines.add(CommandTexts.value(account == null ? parts[0] : account.currentName(),
+                        CommandTexts.format(metric, Long.parseLong(parts[2]))));
+            }
+            lines.add(CommandTexts.value("工程合计", CommandTexts.format(metric, total)));
+            lines.add(CommandTexts.hint("共 " + members.size() + " 个成员；工程累计只统计已采集的数据，"
+                    + "不代表机器的实际产量。"));
+            return lines;
+        });
+        return 1;
+    }
+
+    private int fine(CommandContext<CommandSourceStack> ctx, Identity group, int page) {
+        CommandSourceStack source = ctx.getSource();
+        String metricId = StringArgumentType.getString(ctx, "metric");
+        Metric metric = Metric.byId(metricId);
+        if (metric == null) {
+            source.sendFailure(CommandTexts.error("未知指标：" + metricId));
+            return 0;
+        }
+        if (!metric.supportsFineBoards()) {
+            source.sendFailure(CommandTexts.error("指标 " + metric.displayName() + " 没有分类细目，无法生成细分榜。"));
+            return 0;
+        }
+        String category = StringArgumentType.getString(ctx, "category");
+        int pageNumber = page;
+        if (!services().permissions().canQueryPublic(source)) {
+            source.sendFailure(CommandTexts.error("公开查询当前已关闭。"));
+            return 0;
+        }
+        if (!services().permissions().isBoardOpen(group)) {
+            source.sendFailure(CommandTexts.error(group.displayName() + "公共榜当前已关闭。"));
+            return 0;
+        }
+        List<String> modes = services().rules().publicModes();
+        asyncQuery(source, () -> services().permissions().canQueryPublic(source), () -> {
+            List<Component> lines = new ArrayList<>();
+            var scope = StatsRepository.Scope.of(metric, group, modes, "", category);
+            var entries = services().stats().board(scope, pageNumber, PAGE_SIZE);
+            lines.add(CommandTexts.title("细分榜 · " + metric.displayName() + " · " + category
+                    + " · " + group.displayName()));
+            lines.add(CommandTexts.hint("维度：全部；模式：" + String.join("、", modes)
+                    + "（完整筛选请用 /themisstats admin board）"));
+            if (entries.isEmpty()) {
+                lines.add(CommandTexts.line("该范围内暂无数据。"));
+                return lines;
+            }
+            for (var entry : entries) {
+                lines.add(Component.literal("§8#" + entry.rank() + " §f" + entry.name() + " §8- §a"
+                        + CommandTexts.format(metric, entry.value())));
+            }
+            lines.add(CommandTexts.hint("第 " + pageNumber + " 页，共 "
+                    + services().stats().boardSize(scope) + " 个对象。"));
+            return lines;
+        });
+        return 1;
+    }
+
     private int explain(CommandContext<CommandSourceStack> ctx) {
         CommandSourceStack source = ctx.getSource();
         String metricId = StringArgumentType.getString(ctx, "metric");
@@ -768,6 +896,13 @@ public final class ThemisStatsCommand {
             case VILLAGER_TRADES -> "一次成功执行的交易计 1，一次获得多个物品仍是 1 次";
             case FISHING -> "一次成功钓获计 1；空甩竿与空收竿不计";
             case ELYTRA_DISTANCE -> "鞘翅滑翔时的连续有效位移；传送、跨维度与单 tick 超过 20 方块的跳变不计";
+            case DAMAGE_DEALT -> "实际从目标普通生命上扣除的伤害；护甲、抵抗与吸收生命先被扣除，过量伤害按剩余生命计，不累计请求伤害";
+            case DAMAGE_TAKEN -> "实际从自身普通生命上扣除的伤害；吸收生命与图腾触发不计";
+            case MOVEMENT -> "自身移动产生的有效位移，按步行、游泳、乘骑、飞行分类；被活塞或潜影盒推动不算";
+            case CRAFTED -> "成功领取的制作产物数量；这是领取量，不代表产量";
+            case PICKED_UP -> "实际进入背包的物品数量，不以掉落实体的堆数计算；背包满时只计真正拿走的部分";
+            case DROPPED -> "玩家主动丢弃的物品数量；死亡掉落不计入";
+            case PIGLIN_BARTERS -> "与猪灵完成的一次交换；无法明确归属到玩家时不计";
         };
     }
 }

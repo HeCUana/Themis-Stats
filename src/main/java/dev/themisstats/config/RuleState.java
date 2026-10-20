@@ -6,14 +6,16 @@ import carpet.api.settings.RuleHelper;
 import dev.themisstats.ThemisStats;
 import net.minecraft.commands.CommandSourceStack;
 
+import java.util.ArrayList;
 import java.util.EnumMap;
+import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
- * Live view over the 15 Themis Stats Carpet rules.
+ * Live view over the 18 Themis Stats Carpet rules.
  *
  * <p>Carpet owns the authoritative values; this class only caches the last observed value of every
  * rule so that a change can be reported as {@code old -> new}, and so that consumers can subscribe
@@ -44,7 +46,10 @@ public final class RuleState {
             "themisStatsPublicQuery",
             "themisStatsBotMonitor",
             "themisStatsBotSampleSeconds",
-            "themisStatsBotLocations");
+            "themisStatsBotLocations",
+            "themisStatsBotAlerts",
+            "themisStatsPublicModes",
+            "themisStatsStallPurposes");
 
     /** @return the names of all Themis Stats rules, in a stable order */
     public static List<String> ruleNames() {
@@ -178,6 +183,35 @@ public final class RuleState {
 
     public String botLocations() {
         return ThemisStatsRules.themisStatsBotLocations;
+    }
+
+    public boolean botAlerts() {
+        return ThemisStatsRules.themisStatsBotAlerts;
+    }
+
+    /** @return the bot purposes for which the "no progress" alert may fire */
+    public List<String> stallPurposes() {
+        String raw = ThemisStatsRules.themisStatsStallPurposes;
+        List<String> purposes = new ArrayList<>();
+        for (String part : raw.split(",")) {
+            String trimmed = part.trim().toLowerCase(java.util.Locale.ROOT);
+            if (!trimmed.isEmpty()) {
+                purposes.add(trimmed);
+            }
+        }
+        return purposes;
+    }
+    /** @return the game modes that count towards the public leaderboards */
+    public List<String> publicModes() {
+        String raw = ThemisStatsRules.themisStatsPublicModes;
+        List<String> modes = new ArrayList<>();
+        for (String part : raw.split(",")) {
+            String trimmed = part.trim().toLowerCase(java.util.Locale.ROOT);
+            if (!trimmed.isEmpty()) {
+                modes.add(trimmed);
+            }
+        }
+        return modes.isEmpty() ? List.of("survival", "adventure") : modes;
     }
 
     /** @return the default value of a rule, as Carpet reports it */

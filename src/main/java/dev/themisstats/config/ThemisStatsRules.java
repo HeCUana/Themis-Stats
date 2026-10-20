@@ -7,7 +7,7 @@ import net.minecraft.commands.CommandSourceStack;
 import org.jetbrains.annotations.Nullable;
 
 /**
- * The 15 P0 rules of Themis Stats.
+ * The 18 Themis Stats rules: 15 from the first release and 3 for the run alerts.
  *
  * <p>These fields are registered into Carpet's <strong>main</strong> settings manager
  * (the one behind {@code /carpet}), so they are managed with {@code /carpet list themisStats},
@@ -62,7 +62,8 @@ public final class ThemisStatsRules {
 
     /** The metric shown by default on the sidebar. Must be a metric enabled in this build. */
     @Rule(categories = {CATEGORY}, options = {"online", "mining", "placement", "kills", "deaths",
-            "villager_trades", "fishing", "elytra_distance"})
+            "villager_trades", "fishing", "elytra_distance", "damage_dealt", "damage_taken", "movement",
+            "crafted", "picked_up", "dropped", "piglin_barters"})
     public static String themisStatsDefaultBoard = "mining";
 
     /** The default identity group. Constrained by the matching public board switch. */
@@ -106,6 +107,38 @@ public final class ThemisStatsRules {
     /** Who may see precise bot positions, equipment and restricted run details. */
     @Rule(categories = {CATEGORY}, options = {"ops", "owners", "all"})
     public static String themisStatsBotLocations = "owners";
+
+    // ------------------------------------------------------------------ P1
+
+    /**
+     * Whether the configured run alerts are sent at all.
+     *
+     * <p>Subscriptions may be stored while this is off, so an operator can prepare the
+     * subscriptions and then switch the alerts on.</p>
+     */
+    @Rule(categories = {CATEGORY})
+    public static boolean themisStatsBotAlerts = false;
+
+    /**
+     * The game modes that count towards the public leaderboards.
+     *
+     * <p>Default is the same scope as the first release: survival and adventure. Creative and
+     * spectator are collected as well, they are just not public unless they are listed here.</p>
+     */
+    @Rule(categories = {CATEGORY}, options = {"survival,adventure", "survival,adventure,creative",
+            "survival,adventure,creative,spectator", "survival"})
+    public static String themisStatsPublicModes = "survival,adventure";
+
+    /**
+     * The bot purposes for which the "no progress" alert may fire.
+     *
+     * <p>The alert only ever says that the named statistic did not grow inside the observation
+     * window; it never claims that a machine is broken. The {@code loader} purpose is not part of
+     * the default list, because a bot that only keeps the area loaded is expected to be idle.</p>
+     */
+    @Rule(categories = {CATEGORY}, options = {"mining,combat,use,custom", "mining,combat,use,custom,loader",
+            "mining", "combat", "use", "custom", "loader", "mining,combat,use,custom,loader,any"})
+    public static String themisStatsStallPurposes = "mining,combat,use,custom";
 
     // ------------------------------------------------------------------ validators
 

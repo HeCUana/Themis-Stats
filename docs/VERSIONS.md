@@ -20,7 +20,7 @@
 | Carpet 规则前缀与分类 | `themisStats` |
 | 世界内数据目录 | `<世界根目录>/themisstats/` |
 | 数据库文件名 | `stats.db` |
-| 首发版本 | `0.1.0`（P0 功能范围） |
+| 首发版本 | `0.1.0`（P0 全部 ＋ P1 运行告警与增强指标 ＋ P2 查询接口与显式导入） |
 
 命名覆盖：构建配置、Fabric 元数据、Java 包、Mixin 配置、资源目录、数据库路径、日志、命令、
 规则、README、测试与 JAR 名称。项目中**没有**残留任何服务器品牌命名。
@@ -67,13 +67,15 @@ Carpet 1.4.194 的源码（`https://github.com/gnembon/fabric-carpet` 标签 `1.
 | 假人识别 | `carpet.patches.EntityPlayerMPFake#isAShadow` | 与 Carpet 自己的脚本 API `carpet.script.external.Carpet#playerType` 的判定方式一致 |
 | 假人连接 | `carpet.patches.FakeClientConnection` | 使用 `EmbeddedChannel`，据此把「其他模组的假人」判为 `unknown` |
 | 动作计划 | `carpet.fakes.ServerPlayerInterface#getActionPack()` | 公开接口；`EntityPlayerActionPack#actions` 是私有字段，因此用一个 **Mixin 访问器**只读访问，不使用反射猜字段 |
+| Scarpet 函数注册 | `CarpetExtension#scarpetApi(CarpetExpression)` | Carpet 官方的扩展钩子；`CarpetExpression#getExpr()` 拿到 `Expression`，用 `Expression#addCustomFunction(String, ILazyFunction)` 注册即可，不需要 Mixin Carpet 内部 |
+| Scarpet 函数签名 | `Fluff.ILazyFunction` | 必须实现 `pure()` 与 `transitive()`；本 Mod 的三个函数都返回 `false`（它们读的是实时数据库，输出会随时间变化），否则 Carpet 会在解析期就把它们当常量折叠 |
 
 ### 生命周期顺序（实测确认）
 
 ```
 Fabric main 入口点        -> ThemisStats#onInitialize -> CarpetServer.manageExtension
 Fabric server 入口点      -> CarpetServer.onGameStarted -> 主管理器建立 + 解析 Carpet 自带规则
-                              -> 依次调用扩展的 onGameStarted -> 本项目在这里注册 15 条规则
+                              -> 依次调用扩展的 onGameStarted -> 本项目在这里注册 18 条规则
 MinecraftServer 构造      -> Commands 构造 -> CarpetServer.registerCarpetCommands -> 扩展的 registerCommands
 MinecraftServer.loadLevel -> CarpetServer.onServerLoaded -> 扩展的 onServerLoaded -> 打开数据库
 每 tick                   -> CarpetServer.tick -> 扩展的 onTick
@@ -103,6 +105,25 @@ MinecraftServer.loadLevel -> CarpetServer.onServerLoaded -> 扩展的 onServerLo
 | 侧边栏渲染 | 客户端 `Gui#displayScoreboardSidebar` | 渲染 `playerScoreEntry.ownerName()` 与 `formatValue(numberFormat)`；`blank` 格式返回空组件，因此数值完全由文本承载 |
 | 最多 15 行 | 客户端 `displayScoreboardSidebar` 的 `limit(15L)` | 本 Mod 默认显示 Top 10，安全 |
 
+### P1 七类增强指标的挂点
+
+| 指标 | 挂点 | 结论 |
+| --- | --- | --- |
+| `damage_dealt` / `damage_taken` | `LivingEntity#actuallyHurt(ServerLevel, DamageSource, float)` 与 **`Player#actuallyHurt(...)`** | **两个都必须挂**：`Player` **覆盖**了 `LivingEntity#actuallyHurt` 并且覆盖版本**不调用** `super`，因此只挂 `LivingEntity` 时玩家（真人与假人）的伤害**一次都不会被记到**。两处各挂一次不会重复计数，因为覆盖版本不会调用被覆盖版本 |
+| 伤害口径 | `actuallyHurt` 内的 `setHealth(getHealth() - var10)` | 护甲、抵抗、吸收生命与图腾的结算都在方法内部完成，因此「方法前后血量差」就是**实际扣掉的血**，过量伤害也不会超过当时的血量 |
+| `movement` | `Entity#move(MoverType, Vec3)` | 只统计 `MoverType.SELF`；传送与活塞推动是别的 `MoverType`，不会进来 |
+| `crafted` | `ResultSlot#onTake(Player, ItemStack)` | 取一次合成结果计 1 |
+| `picked_up` | `ItemEntity#playerTouch(Player)` 里的 `Inventory#add(ItemStack)` 调用点 | 数量取「加入前件数 − 加入后件数」；**物品名必须在 `Inventory.add` 之前读**，因为整叠被收下时原版会把栈清空再把件数还原，清空后的 `getItem()` 是 `minecraft:air` |
+| `dropped` | `ServerPlayer#drop(Z)V` | 必须写完整描述符，`drop` 有重载 |
+| `piglin_barters` | `PiglinAi#stopHoldingOffHandItem(ServerLevel, Piglin, boolean)` ＋ `PiglinAi#throwItemsTowardPlayer(Piglin, Player, List<ItemStack>)` | 两个方法都是 `static`；猪灵交易的方法在 `PiglinAi` 而不在 `Piglin`。只有 `bl=true` 的那次完成才算交换，归属取实际被丢物品的玩家 |
+
+### P2 的两个实现要点
+
+| 用途 | API | 结论 |
+| --- | --- | --- |
+| 含 `:` 的参数 | Brigadier `StringArgumentType#word()` | 只允许字母、数字与 `_- . +`，**不允许 `:`**，因此 `minecraft:stone` 会被判成「found trailing data」。本 Mod 自带一个 `TokenArgumentType`，按空白切分并原样返回 |
+| 含空格的路径 | Brigadier `StringArgumentType#greedyString()` | `string()` 遇到空格就断，必须用 `greedyString()` |
+
 ---
 
 ## 5. 构建与产物
@@ -123,6 +144,6 @@ MinecraftServer.loadLevel -> CarpetServer.onServerLoaded -> 扩展的 onServerLo
 
 | Minecraft | Java | Loader | Fabric API | Carpet | 结果 |
 | --- | --- | --- | --- | --- | --- |
-| 1.21.11 | 21 | 0.19.5 | 0.141.6+1.21.11 | 1.4.194 | 服务端正常启动、加载本 Mod、注册 15 条规则、创建数据库、采集与查询均正常 |
+| 1.21.11 | 21 | 0.19.5 | 0.141.6+1.21.11 | 1.4.194 | 服务端正常启动、加载本 Mod、注册 18 条规则、创建数据库、采集与查询均正常；schema 从 v4 迁移到 v6 实测通过 |
 
 其它组合**未经实测**。

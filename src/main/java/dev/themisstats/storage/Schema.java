@@ -18,7 +18,7 @@ package dev.themisstats.storage;
 public final class Schema {
 
     /** Current schema version. Bump this whenever the DDL below changes. */
-    public static final int VERSION = 3;
+    public static final int VERSION = 6;
 
     private Schema() {
     }
@@ -230,6 +230,101 @@ public final class Schema {
                 DROP TABLE bot_profile;
                 ALTER TABLE bot_profile_new RENAME TO bot_profile;
                 CREATE INDEX IF NOT EXISTS idx_bot_profile_owner ON bot_profile(owner_uuid);
+                """,
+                // ---- version 4 ------------------------------------------------------
+                // P1: the run alerts and the sessions comparison.
+                """
+                CREATE TABLE watch_subscription (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    target_uuid     TEXT    NOT NULL,
+                    target_identity TEXT    NOT NULL,
+                    subscriber_uuid TEXT    NOT NULL,
+                    alerts          INTEGER NOT NULL DEFAULT 0,
+                    low_health      REAL    NOT NULL DEFAULT 6.0,
+                    low_durability  REAL    NOT NULL DEFAULT 10.0,
+                    stall_metric    TEXT,
+                    created_wall    INTEGER NOT NULL,
+                    UNIQUE (target_uuid, target_identity, subscriber_uuid)
+                );
+
+                CREATE TABLE alert_state (
+                    target_uuid       TEXT    NOT NULL,
+                    target_identity   TEXT    NOT NULL,
+                    reason            TEXT    NOT NULL,
+                    active            INTEGER NOT NULL DEFAULT 0,
+                    last_fired_wall    INTEGER,
+                    last_recovered_wall INTEGER,
+                    PRIMARY KEY (target_uuid, target_identity, reason)
+                );
+
+                CREATE TABLE alert_log (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    target_uuid     TEXT,
+                    target_identity TEXT,
+                    reason          TEXT    NOT NULL,
+                    subscriber_uuid TEXT,
+                    message         TEXT    NOT NULL,
+                    created_wall    INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_alert_log_created ON alert_log(created_wall DESC);
+
+                CREATE TABLE stall_window (
+                    target_uuid       TEXT    NOT NULL,
+                    target_identity   TEXT    NOT NULL,
+                    metric            TEXT    NOT NULL,
+                    window_start_wall INTEGER NOT NULL,
+                    last_value        INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (target_uuid, target_identity, metric)
+                );
+
+                CREATE TABLE summary_pref (
+                    uuid    TEXT PRIMARY KEY,
+                    enabled INTEGER NOT NULL DEFAULT 0
+                );
+
+                CREATE TABLE import_log (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source       TEXT    NOT NULL,
+                    imported     INTEGER NOT NULL DEFAULT 0,
+                    skipped      INTEGER NOT NULL DEFAULT 0,
+                    operator     TEXT    NOT NULL,
+                    created_wall INTEGER NOT NULL
+                );
+                """,
+                // ---- version 5 ------------------------------------------------------
+                // P2: the collected rows carry their origin, so that an explicit import of
+                // historical data can never be mixed up with what this mod collected itself.
+                // The project label groups the objects of one farm.
+                """
+                ALTER TABLE total ADD COLUMN source TEXT NOT NULL DEFAULT 'collected';
+                CREATE INDEX IF NOT EXISTS idx_total_source ON total(metric, identity, source);
+                ALTER TABLE bot_profile ADD COLUMN project TEXT;
+                CREATE INDEX IF NOT EXISTS idx_bot_profile_project ON bot_profile(project);
+                """,
+                // ---- version 6 ------------------------------------------------------
+                // The origin becomes part of the cell itself. Before this, an explicitly imported
+                // value was written into the same row as a value this mod collected itself, so an
+                // import could silently inflate the public leaderboard. Now the two origins live
+                // in separate rows and only the scope that asks for them counts them.
+                """
+                CREATE TABLE total_new (
+                    uuid      TEXT    NOT NULL,
+                    identity  TEXT    NOT NULL,
+                    metric    TEXT    NOT NULL,
+                    category  TEXT    NOT NULL DEFAULT '',
+                    dimension TEXT    NOT NULL DEFAULT '',
+                    game_mode TEXT    NOT NULL DEFAULT '',
+                    value     INTEGER NOT NULL DEFAULT 0,
+                    source    TEXT    NOT NULL DEFAULT 'collected',
+                    PRIMARY KEY (uuid, identity, metric, category, dimension, game_mode, source)
+                );
+                INSERT OR REPLACE INTO total_new(uuid, identity, metric, category, dimension, game_mode, value, source)
+                    SELECT uuid, identity, metric, category, dimension, game_mode, value, 'collected' FROM total;
+                DROP TABLE total;
+                ALTER TABLE total_new RENAME TO total;
+                CREATE INDEX IF NOT EXISTS idx_total_rank
+                    ON total(metric, identity, game_mode, dimension, value DESC);
+                CREATE INDEX IF NOT EXISTS idx_total_source ON total(metric, identity, source);
                 """
         };
     }

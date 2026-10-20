@@ -33,7 +33,17 @@ public final class Exporter {
             .ofPattern("yyyyMMdd-HHmmss").withZone(java.time.ZoneOffset.UTC);
 
     /** The scope of an export. */
-    public record ExportScope(String description, Metric metric, Identity identity, List<String> gameModes) {
+    public record ExportScope(String description, Metric metric, Identity identity, List<String> gameModes,
+                              boolean includeImported) {
+
+        public ExportScope {
+            gameModes = List.copyOf(gameModes);
+        }
+
+        /** A scope that exports what this mod collected itself. */
+        public ExportScope(String description, Metric metric, Identity identity, List<String> gameModes) {
+            this(description, metric, identity, gameModes, false);
+        }
     }
 
     /** The result of an export. */
@@ -94,6 +104,11 @@ public final class Exporter {
         List<Object> parameters = new ArrayList<>();
         parameters.add(scope.metric().id());
         parameters.add(scope.identity().id());
+        if (!scope.includeImported()) {
+            // The export follows the public leaderboard: the explicitly imported historical data
+            // is only part of it when the scope asks for it.
+            sql.append(" AND t.source = 'collected'");
+        }
         if (!scope.gameModes().isEmpty()) {
             sql.append(" AND t.game_mode IN (");
             for (int i = 0; i < scope.gameModes().size(); i++) {

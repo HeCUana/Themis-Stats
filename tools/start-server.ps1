@@ -18,6 +18,9 @@ $c = $c -replace '^view-distance=.*$', 'view-distance=8'
 $c = $c -replace '^simulation-distance=.*$', 'simulation-distance=6'
 $c = $c -replace '^motd=.*$', 'motd=Themis Stats 0.1.0 - Carpet 1.21.11'
 $c = $c -replace '^spawn-protection=.*$', 'spawn-protection=0'
+# 空服 60 秒后 Minecraft 会暂停 tick，Carpet 假人的连接握手会卡在「已登录但没进游戏」，
+# 因此测试服关掉这个暂停。
+$c = $c -replace '^pause-when-empty-seconds=.*$', 'pause-when-empty-seconds=0'
 Set-Content -Path $props -Value $c -Encoding UTF8
 
 $stray = Get-CimInstance Win32_Process -Filter "Name='java.exe'" | Where-Object { $_.CommandLine -like '*launcher*' }
