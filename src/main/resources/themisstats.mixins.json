@@ -1,0 +1,19 @@
+{
+  "required": true,
+  "package": "dev.themisstats.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "mixins": [
+    "BlockItemMixin",
+    "EntityPlayerActionPackAccessor",
+    "EntityPlayerMPFakeMixin",
+    "FishingHookMixin",
+    "LivingEntityMixin",
+    "MerchantResultSlotMixin",
+    "PlayerMixin",
+    "ServerPlayerGameModeMixin",
+    "ServerPlayerMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

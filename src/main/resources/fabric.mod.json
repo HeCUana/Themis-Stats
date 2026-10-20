@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "id": "themisstats",
+  "version": "${version}",
+
+  "name": "Themis Stats",
+  "description": "面向 Carpet 生电服的玩家统计、排行榜与假人运行观察附属。服务端安装，原版客户端即可使用全部 P0 功能。",
+  "authors": [
+    "Themis Stats"
+  ],
+  "contact": {},
+  "license": "MIT",
+
+  "environment": "server",
+  "entrypoints": {
+    "main": [
+      "dev.themisstats.ThemisStats"
+    ]
+  },
+  "mixins": [
+    "themisstats.mixins.json"
+  ],
+  "accessWidener": "themisstats.accesswidener",
+
+  "depends": {
+    "fabricloader": ">=0.18.2",
+    "minecraft": "1.21.11",
+    "java": ">=21",
+    "carpet": ">=1.4.194",
+    "fabric-api": "*"
+  }
+}

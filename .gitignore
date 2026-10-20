@@ -1,0 +1,33 @@
+# Gradle
+.gradle/
+build/
+out/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.settings/
+.classpath
+.project
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local reference material used while developing (Carpet sources, decompiled Minecraft)
+_ref/
+
+# Stray decompiled class files and server logs that end up in the project root
+net/
+logs/
+
+# Local test server: world, logs, downloaded mods and libraries are machine local
+server/
+*.pid
+
+# Local tool output
+tools/*.log
+tools/benchmark-*.txt
+tools/benchmark-result.txt
+tools/patch_*.py

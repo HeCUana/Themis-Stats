@@ -1,0 +1,99 @@
+plugins {
+    id 'fabric-loom' version '1.13.6'
+    id 'maven-publish'
+}
+
+version = project.mod_version
+group = project.maven_group
+
+base {
+    archivesName = project.archives_base_name
+}
+
+repositories {
+    maven {
+        name = 'Modrinth'
+        url = 'https://api.modrinth.com/maven'
+        content {
+            includeGroup 'maven.modrinth'
+        }
+    }
+    maven {
+        name = 'TerraformersMC'
+        url = 'https://maven.terraformersmc.com/'
+    }
+}
+
+loom {
+    // Carpet 1.4.194 ships an access widener; Loom applies dependency access wideners
+    // automatically, but Themis Stats needs its own for the Minecraft members it touches.
+    accessWidenerPath = file('src/main/resources/themisstats.accesswidener')
+    runtimeOnlyLog4j = true
+
+    runs {
+        server {
+            server()
+            runDir = 'run/server'
+        }
+        client {
+            client()
+            runDir = 'run/client'
+        }
+    }
+}
+
+dependencies {
+    minecraft "com.mojang:minecraft:${project.minecraft_version}"
+    mappings loom.officialMojangMappings()
+    modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+    modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+
+    // Carpet is a hard runtime dependency. Compiled against the published 1.4.194 artifact.
+    modImplementation "maven.modrinth:carpet:${project.carpet_version}"
+
+    // Embedded SQLite driver, shaded into the release jar.
+    implementation "org.xerial:sqlite-jdbc:${project.sqlite_jdbc_version}"
+    include "org.xerial:sqlite-jdbc:${project.sqlite_jdbc_version}"
+
+    testImplementation "org.junit.jupiter:junit-jupiter:5.11.4"
+    testRuntimeOnly "org.junit.platform:junit-platform-launcher"
+}
+
+processResources {
+    inputs.property "version", project.version
+    inputs.property "minecraft_version", project.minecraft_version
+    inputs.property "loader_version", project.loader_version
+    inputs.property "carpet_version", project.carpet_version
+
+    filesMatching("fabric.mod.json") {
+        expand "version": project.version,
+                "minecraft_version": project.minecraft_version,
+                "loader_version": project.loader_version,
+                "carpet_version": project.carpet_version
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    it.options.encoding = "UTF-8"
+    it.options.release = 21
+}
+
+java {
+    withSourcesJar()
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
+
+test {
+    useJUnitPlatform()
+    testLogging {
+        events "passed", "skipped", "failed"
+        exceptionFormat "full"
+    }
+}
+
+jar {
+    from("LICENSE") {
+        rename { "${it}_${project.archives_base_name}" }
+    }
+}

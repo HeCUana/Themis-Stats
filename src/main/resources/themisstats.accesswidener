@@ -1,0 +1,19 @@
+accessWidener	v1	named
+
+# Themis Stats access widener.
+#
+# Only Minecraft members that Themis Stats genuinely needs to read are widened here.
+# Carpet members are NOT listed: Carpet exposes what we need through its own public
+# API (carpet.patches.EntityPlayerMPFake, carpet.patches.FakeClientConnection,
+# carpet.helpers.EntityPlayerActionPack, carpet.fakes.ServerPlayerInterface,
+# carpet.api.settings.*) plus a Mixin accessor for the one private field we need
+# (EntityPlayerActionPack#actions).
+
+# Identity resolution: we must be able to tell a real client connection from an
+# in-process (embedded) channel, so that a fake-like object created by another mod is
+# reported as `unknown` instead of being guessed to be a human.
+# Verified against the 1.21.11 official Mojang mappings:
+#   net.minecraft.network.Connection                                  -> private io.netty.channel.Channel channel;
+#   net.minecraft.server.network.ServerCommonPacketListenerImpl        -> protected final net.minecraft.network.Connection connection;
+accessible	field	net/minecraft/network/Connection	channel	Lio/netty/channel/Channel;
+accessible	field	net/minecraft/server/network/ServerCommonPacketListenerImpl	connection	Lnet/minecraft/network/Connection;
