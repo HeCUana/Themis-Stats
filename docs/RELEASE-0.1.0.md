@@ -351,6 +351,9 @@ Windows 下用 `gradlew.bat`。发布包**已内嵌** SQLite 驱动，部署时�
 
 ```
 文件   themis-stats-0.1.0.jar
+大小   12,245,499 字节
+SHA-256  6e6b184ae782e2a721bfe078a20ce3eb39b19094d18732095f4c5ce92dc520e7
+SHA-1    9c55dcf5db183251c6e0aac7624b4587817140
 ```
 
 > JAR 打包会写入文件时间戳，因此**不是逐字节可复现**的：同样的源码重新构建会得到不同的 SHA-256
