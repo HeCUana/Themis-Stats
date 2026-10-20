@@ -1,6 +1,6 @@
 # 验收矩阵（P0 + P1 + P2）
 
-日期：2026-10-20
+日期：2026-10-21（第三轮：**五个阶段全流程**脚本化实测；第二轮为同日早些时候的定点实测，第一轮为 2026-10-20）
 版本：Themis Stats 0.1.0（P0 全部 ＋ P1 运行告警与增强指标 ＋ P2 查询接口与显式导入）
 测试环境：Minecraft Java **1.21.11**（Fabric Loader 0.19.5，Fabric API 0.141.6+1.21.11，Carpet 1.4.194，Java 21）
 测试服务端：`server/`（隔离测试世界，`online-mode=false`，`level-seed=themisstats`）
@@ -20,9 +20,82 @@
 
 ---
 
+## 0-A. 第二轮实测：三个致命缺陷（**上一轮结论是错的**）
+
+第一轮验收把「假人进不了服」判成了**环境问题**。第二轮用 RCON／控制台脚本化实测把它定位到了
+**本 Mod 自己头上**，并且一共挖出三个致命缺陷。**上一轮 7.1 节的结论作废，以本节为准。**
+
+### 0-A.1 自定义 Brigadier 参数类型让**所有玩家都无法进服**（致命）
+
+**现象**：带本 Mod 启动的服务端上，假人和真人**一律**卡在「已登录但没进游戏」：
+
+```
+[Server thread/INFO]: bot_a[local] logged in with entity id 1 at (64.0, 63.0, 48.0)
+（之后没有 "bot_a joined the game"，玩家列表里也没有它）
+```
+
+**根因**：P2 引入的自定义参数类型 `dev.themisstats.command.TokenArgumentType` **没有注册进原版的
+`net.minecraft.commands.synchronization.ArgumentTypeInfos`**。原版在 `PlayerList#placeNewPlayer` 内部
+（经 `sendPlayerPermissionLevel` → `Commands#sendCommands`）**为每个进服的玩家序列化整棵命令树**，
+序列化器要为每个参数类型在 `ArgumentTypeInfos` 里找登记项；找不到就抛
+`IllegalArgumentException: Unrecognized argument type token`，而这个异常被 Carpet 的
+`CompletableFuture` 静默吞掉 —— 服务端日志里**一个字都没有**，玩家却永远进不了世界。
+
+**定位手段**：临时加了一个诊断 Mixin（MixinExtras 的 `@WrapMethod` 包住 `PlayerList#placeNewPlayer`）
+把被吞掉的堆栈打出来。
+
+**修法**：**删掉 `TokenArgumentType`**，改用原版已注册的类型 —— 分类参数用
+`StringArgumentType.string()`（含冒号要加引号），维度参数用 `net.minecraft.commands.arguments.IdentifierArgument.id()`。
+之所以不把自定义类型注册进 `ArgumentTypeInfos`，是因为**原版客户端根本不认识自定义类型**，
+注册了客户端也解析不了这棵命令树。
+
+**防回归**：新增 `dev.themisstats.command.ArgumentTypeSelfCheck` —— 命令注册后扫描整棵命令树，
+发现原版未登记的参数类型就 ERROR 日志（并明确提示「会导致玩家无法进服」）。
+启动日志实测：`[ThemisStats] 命令树参数类型自检通过，共 966 种，全部为原版已注册类型`。
+
+### 0-A.2 `DamageRecorder` 放在 Mixin 包里 → 玩家第一次受伤即崩服（致命）
+
+`DamageRecorder` 是一个普通辅助类，却放在 `dev.themisstats.mixin` 包下。Mixin 会拒绝直接加载
+自己包里的普通类（`IllegalClassLoadError: ... is in a defined mixin package ... and cannot be
+referenced directly`），于是**玩家第一次受到伤害时服务端直接崩溃**。
+
+**修法**：移到 `dev.themisstats.metric.DamageRecorder`（public），两个 Mixin 改 import。
+
+**防回归**：新增 `dev.themisstats.MixinPackageTest`（2 个用例）—— 断言 Mixin 包内每个类都登记在
+`themisstats.mixins.json` 里，且登记项都有对应源文件。
+
+### 0-A.3 `dropped` 按整组计数，实际只丢 1 个也记整组（数据失真）
+
+`ServerPlayer#drop(boolean)` 的语义是：`false` 丢**一个**，`true` 才丢**整组**
+（`Inventory#removeFromSelected` 只在 `true` 时取整叠数量）。原实现的 Mixin 直接取
+`inventory.getSelectedItem().getCount()`，于是**主手拿着 64 个石头按一下 Q 就会记 64**。
+
+**修法**：数量跟着标志走 —— `random ? stack.getCount() : 1`。
+
+**实测证据**（第二轮，服务端真实执行）：
+
+| 操作 | 主手 | 期望 | 实测 `total` 增量 |
+| --- | --- | --- | --- |
+| `/player bot_a drop` | 5 个石头 | 1 | **1** |
+| `/player bot_a dropStack` | 剩 4 个石头 | 4 | **4** |
+
+> 死亡掉落**不计入** `dropped`：原版死亡掉落在 `Inventory#dropAll` → `player.drop(ItemStack, boolean, boolean)`，
+> 不是 `drop(boolean)` 这条路径，计数点挂不到。
+
+### 0-A.4 上一轮的错误结论（作废）
+
+> 第一轮写的是：「假人无法完成上线是**环境问题**」（Mojang 会话服务器超时）。
+> **这个结论是错的。** 真实原因是 0-A.1 的自定义参数类型：命令树序列化在 `placeNewPlayer` 里失败，
+> 异常被 Carpet 吞掉，**和 Mojang 网络毫无关系**。
+> 摘掉本 Mod 的 jar 后假人立刻正常上线；换成修复后的 jar，假人同样正常上线。
+> Mojang 档案查询超时确实存在，但它只影响**新建**假人的速度（首次约 2 分钟，档案缓存后秒进），
+> 不影响已经存在的假人上线。
+
+---
+
 ## 0. 自动化测试
 
-`./gradlew test` 运行 **109 个单元测试**，全部通过。它们跑在**真实的 SQLite 与真实 schema** 上，
+`./gradlew test` 运行 **115 个单元测试**（15 个测试类），全部通过。它们跑在**真实的 SQLite 与真实 schema** 上，
 覆盖的是最容易出错、也最不容易靠肉眼确认的部分：
 
 | 测试类 | 数量 | 覆盖 |
@@ -31,18 +104,19 @@
 | `StatsRepositoryScopeTest` | 8 | P1 的六分量范围：维度过滤、分类过滤、模式过滤、**细分榜与总计同源**、调整不串格、排除在所有范围都生效、online 不按模式过滤 |
 | `BatchWriterTest` | 6 | 增量落库、**同一批次重放不重复加分**、批次回执与会话汇总同事务写入、**数据库故障进入可见降级状态**、空批次 |
 | `ElytraDistanceCalculatorTest` | 6 | 正常滑翔累计、起跳与落地不计、**传送跳变不计**、跨维度不计、千分之一方块精度、重置 |
-| `SidebarContentTest` | 8 | 64 位值完整显示、**排序分与业务值解耦**、名次、指标与模式范围表头、online 不标模式范围、榜外玩家单独一行、最多 10 行、未知指标不产出内容 |
+| `SidebarContentTest` | 9 | 64 位值完整显示、**排序分与业务值解耦**、名次、指标与模式范围表头、online 不标模式范围、榜外玩家单独一行、最多 10 行、未知指标不产出内容 |
 | `ConfirmTokensTest` | 5 | 令牌只能用一次、**他人令牌被拒且不被消耗**、参数绑定、过期拒绝、未知令牌拒绝 |
-| `ThemisStatsRulesTest` | 6 | 规则文本齐全（缺文本会导致**服务端启动崩溃**）、18 条规则、**RuleState 认识每一条规则**、默认指标下拉覆盖全部指标、告警开关默认关闭 |
-| `WatchRepositoryTest` | 10 | 订阅的增删改、同名不同身份是两��订阅、告警状态与冷却时间、恢复会清掉激活标记、停滞窗口、摘要偏好、告警日志、导入日志 |
+| `ThemisStatsRulesTest` | 8 | 规则文本齐全（缺文本会导致**服务端启动崩溃**）、18 条规则、**RuleState 认识每一条规则**、默认指标下拉覆盖全部指标、告警开关默认关闭 |
+| `WatchRepositoryTest` | 11 | 订阅的增删改、同名不同身份是两条订阅、告警状态与冷却时间、恢复会清掉激活标记、停滞窗口、摘要偏好、告警日志、导入日志 |
 | `ImportServiceTest` | 11 | 合法行导入、未知指标跳过并报告、列数不足跳过、负数跳过、注释与空行不计入跳过、缺文件不崩、**导入行标记为 imported**、**导入不进公共榜**、**导入与采集分家**、重复导入累加、导入不会自动发生 |
 | `SchemaMigrationTest` | 3 | 版本号与迁移数一致、**v5 → v6 迁移保留采集数据**、**来源进入主键** |
-| `MetricTest` | 9 | 15 类指标、id 唯一、口径名与单位、七类增强指标标记、伤害单位、细分能力、id 列表 |
+| `MetricTest` | 13 | 15 类指标、id 唯一、口径名与单位、七类增强指标标记、伤害单位、细分能力、id 列表、**资源定位型分类可省略命名空间**（`stone` → `minecraft:stone`）、**词型分类绝不猜测命名空间**（`mob`／`genericKill`／`walk` 保持原样） |
 | `AlertTypeTest` | 7 | 五类提醒、位不重复、全选掩码、按 id 查找、名单转换、显示名 |
 | `PermissionNodesTest` | 9 | 节点前缀、六个节点名、普通玩家与管理员的默认节点、名字归一化、默认提供者是 OP 等级、可插拔、空提供者的回退 |
 | `ThemisStatsApiTest` | 5 | 没有服务端时查询接口返回空结果而不是抛异常 |
+| `MixinPackageTest` | 2 | **Mixin 包里的每个类都登记在 `themisstats.mixins.json`**、**登记项都有对应源文件**（防 0-A.2 那类崩溃复发） |
 
-> 这些测试在开发过程中真的抓到了五个实现缺陷，均已修复：
+> 这些测试在开发过程中真的抓到了六个实现缺陷，均已修复：
 > 1. `ConfirmTokens#consume` 原先用 `remove` 取令牌，**操作者不对时令牌也被消耗**，
 >     rightful operator 就再也用不了它。改为先校验操作者再移除。
 > 2. `SidebarContent#build` 原先把「玩家出现在榜上」和「玩家出现在前 10 名」混为一谈，
@@ -59,6 +133,48 @@
 >    `/themisstats admin project <对象> <工程>`。
 > 6. **工程名用了 `greedyString()`**：`/themisstats project my-farm mining` 会把指标
 >    一起吞进工程名，导致永远「还没有成员」。已改成普通词参数，并让指标参数真正生效。
+
+### 0-B. 端到端自测脚本（第二轮新增）
+
+`tools/e2e_test.py` 用**服务端控制台的标准输入**驱动测试服务端（命令以「控制台」身份执行，
+输出直接写进服务端日志可以逐条核对），并直接断言统计库里的数字。分五个阶段：
+
+**第三轮全流程结果：41 / 41 全部通过**（`python tools/e2e_test.py basic watch metrics alert stall`）。
+
+| 阶段 | 覆盖 |
+| --- | --- |
+| `basic` | 假人上线、**命令树参数类型自检**、细分榜／诊断榜、假人档案 |
+| `watch` | `watch` / `unwatch` 完整交互（含「必须由玩家执行」的反向用例） |
+| `metrics` | 七类增强指标的采集 |
+| `alert` | 低生命值告警 → 恢复通知、工具低耐久告警 → 恢复通知（端到端，含 60 秒宽限期） |
+| `stall` | 指定统计停滞告警（5 分钟观察窗口） |
+
+> RCON 也能驱动服务端（`tools/rcon.py`），但 RCON 的来源是一个**一次性缓冲区**，
+> 读不到后台线程延迟返回的查询结果，所以**内容核对走控制台**，数据核对走统计库。
+
+### 0-B.1 脚本化自测踩到的三个原版／Carpet 机制（都靠实测定位）
+
+这三件事都不是本 Mod 的问题，但每一个都能让用例「看起来像功能坏了」：
+
+1. **Carpet 一次性动作的执行时机**。`/player <名字> use once` 这类一次性动作在**实体 tick 期间**执行
+   （`EntityPlayerActionPack#tick`），而控制台命令是在**该 tick 结束后**才被清空执行的
+   （`MinecraftServer#runAllTasks()`）。所以「转向 → 右键」写在同一条指令链里时，
+   右键执行时**转向还没生效**；而且 `use once` 是一次性的，打空就没有了。
+   **正解**：分两批发——先 `tp` + `look`，等命令落地后再单独发 `use once`。
+2. **猪灵会自己捡地上的金锭**（`ItemTags.PIGLIN_LOVED`），捡到就进入「欣赏」状态，
+   此时 `PiglinAi#canAdmire` 为假，**再右键它也不收金锭**。测之前必须先清掉落物。
+3. **生存模式下的假人会被猪灵打死**。猪灵的攻击目标筛选会把生存模式的玩家算进去，
+   实测日志：`bot_a was slain by Piglin`。做猪灵用例时假人必须是**创造模式**。
+4. **假人会把自己丢出来的东西捡回去**。掉落物有 10 tick 的拾取延迟，假人站在原地就把它收回主手，
+   「丢整组时记了几个」这种断言会变成「碰巧对上」。
+   而 `/player <名字> drop` 本身也是**一次性动作**（下一个 tick 才执行），
+   所以「丢完立刻清掉落物」写在同一条指令链里也没用——`kill` 会先于动作执行。
+   **正解**：每次丢弃前用 `item replace` 重新铺好一组**已知数量**的物品。
+
+另外两个容易踩空的地方（都不是失败原因，写下来免得下次重查）：
+`PiglinAi#canAdmire` 看的不是手臂姿态而是 **Brain 里的 `ADMIRING_ITEM` / `ADMIRING_DISABLED` 记忆**
+（所以 `data get entity <猪灵> Pose` 读不到东西）；
+猪灵的最大生命值是 **16** 而不是 20（`Attributes.MAX_HEALTH, 16.0`），血量少一点是正常的。
 
 ---
 
@@ -103,9 +219,9 @@
 
 | 编号 | 场景 | 状态 | 证据 |
 | --- | --- | --- | --- |
-| A31 | 运行告警：五类提醒、10 分钟冷却、60 秒宽限期、两次采样确认、恢复只发一次、只发给有权限的订阅者 | **已自动验证（存储与掩码）／端到端未执行** | `WatchRepositoryTest`（10 个用例）覆盖订阅增删改、告警状态、冷却时间、恢复标记、告警日志；`AlertTypeTest`（7 个用例）覆盖位掩码。**告警引擎本身在真实服务端上的触发**属于下面的「环境阻塞」项 |
+| A31 | 运行告警：五类提醒、10 分钟冷却、60 秒宽限期、两次采样确认、恢复只发一次、只发给有权限的订阅者 | **三类已自动验证（端到端）／两类未执行** | 端到端实测（2026-10-21，`tools/e2e_test.py alert stall` 阶段，服务端真实执行，`alert_log` 逐条核对）：① **低生命值**：满血假人打掉 15 点血（剩 5 点）→ `alert_log` 出现 `low_health`，消息「【Themis Stats】bot_a 的生命值已连续两次低于 6.0（当前 5.0）」，`alert_state.active=1`；回血后出现 `low_health_recovered`，消息「【Themis Stats】bot_a 的「低生命值」状态已恢复。」② **工具低耐久**：主手铁镐剩余 2% → `low_durability`，消息「【Themis Stats】bot_a 的主手工具 minecraft:iron_pickaxe 剩余耐久 2%（阈值 10%）」；换上新镐后出现 `low_durability_recovered`，消息「【Themis Stats】bot_a 的「工具低耐久」状态已恢复。」③ **指定统计停滞**：5 分钟窗口内挖掘量不增长 → `metric_stall`，消息「【Themis Stats】bot_a 在最近 5 分钟的有效采集窗口内，指定指标「挖掘量」没有增长（当前 5）。这只说明观察期内该指标无增长，不能据此判断机器是否故障。」**未执行**：**意外离线**（订阅者本人就是被观察对象，它自己掉线后收不到发给自己的离线告警，需要第二个真实玩家）、**保存异常**（需要真的把运行中的数据库写坏）。存储与掩码另有 `WatchRepositoryTest`（11 个用例）与 `AlertTypeTest`（7 个用例）覆盖 |
 | A32 | 细分榜：按方块／实体／移动方式拆分；诊断榜可指定模式、分类与维度 | **已自动验证（范围与公式）／服务端实测** | `StatsRepositoryScopeTest`（8 个用例）验证维度、分类、模式三种过滤，以及**细分榜的合计等于同范围的总计**。服务端实测：`/themisstats fine mining minecraft:stone bot` 输出「细分榜 · 挖掘量 · minecraft:stone · 假人 / #1 bot_a 5 / #2 Bench_A 3」；`/themisstats admin board mining bot survival minecraft:stone minecraft:overworld` 输出「模式：survival；维度：minecraft:overworld；分类：minecraft:stone / #1 bot_a 5 / #2 Bench_A 3」 |
-| A33 | 七类增强指标：伤害、移动、制作、拾取、丢弃、猪灵交换 | **五个已自动验证（历史数据）／两个按源码核对** | 服务端数据库里已有 `movement`（walk／swim／fly）、`picked_up`、`dropped`、`placement` 的实测数据。**本轮修复了两个真实缺陷**：① `Player` **覆盖**了 `LivingEntity#actuallyHurt` 且不调用父实现，所以挂在 `LivingEntity` 上的伤害注入**对玩家一次都不会触发**——已补一个 `PlayerDamageMixin`；② 原版在整叠被收下时会把栈清空再还原件数，导致拾取分类被记成 `minecraft:air`——已改为在 `Inventory.add` 之前读取物品名。`crafted` 与 `piglin_barters` 仍**未在真实服务端上跑出来**（见下） |
+| A33 | 七类增强指标：伤害、移动、制作、拾取、丢弃、猪灵交换 | **六项已自动验证（服务端实测）／`crafted` 未执行** | 服务端逐项实测（`tools/e2e_test.py metrics`，2026-10-21，完整回归 **41/41 全通过**）：`damage_taken` 增量 **5**；`damage_dealt` 增量 **5**（**自校验**：与僵尸实际掉的血对齐，因为 `damage` 命令回报的是**请求值**，护甲减免、无敌帧、环境伤害都会让实际扣血偏离请求值，所以这一项不比「5」，比「实际掉了几点」）；`movement` 增量 **14877**（千分之一方块）；`dropped` 丢一个记 **1**（主手 5 个石头只丢 1 个）、丢整组记 **7**（主手 7 个泥土整组丢掉，**修掉了「按整组计数」的缺陷**）；`picked_up` 增量 **1**（`minecraft:diamond`）；`placement` 增量 **1**；`piglin_barters` 增量 **1**（分类 `minecraft:piglin`，并且**先验证猪灵副手真的拿到了金锭**，再确认指标落库）。**`crafted` 仍未执行**：计数点在 `ResultSlot#onTake`，只能由真实客户端在合成台／物品栏里点击取结果才会触发，命令与假人都做不到 |
 | A34 | 会话对比：最近两次会话的时长、指标与每真实分钟速率 | **已自动验证（服务端实测）** | `/themisstats compare Bot_A bot mining` 输出：较新一次在线 1 分 11 秒、较早一次 14 分 48 秒、时长差 13 分 36 秒、挖掘量 1 → 2（+1）、每真实分钟速率 0.14 → 1.67 次/分钟 |
 
 ### 2.1 P1 的规则
@@ -198,53 +314,46 @@
 
 ## 7. 本轮的环境阻塞与未实测项（**必须看清楚**）
 
-### 7.1 假人无法完成上线（环境问题）
+### 7.1 假人上线：第一轮的结论是错的（**已定位并修复**）
 
-**现象**：本轮多次实测中，Carpet 假人都会走到「已登录」这一步，但**永远走不完上线流程**：
+> **第一轮写的是**：「假人无法完成上线是**环境问题**（Mojang 会话服务器超时）」。
+> **这个结论是错的**，本节按第二轮的实测结果重写。被推翻的根因见第 0-A.1 节：
+> 是**自定义 Brigadier 参数类型没注册进原版的 `ArgumentTypeInfos`**，
+> 原版在 `PlayerList#placeNewPlayer` 里序列化整棵命令树时抛异常，异常被 Carpet 静默吞掉，
+> 玩家永远进不了世界。**与 Mojang 网络没有关系。**
 
-```
-[21:48:14] [Server thread/INFO]: bot_a[local] logged in with entity id 1 at (64.0, 63.0, 48.0)
-（之后没有 "bot_a joined the game"，假人也不出现在玩家列表里）
-```
+**现在的实测状态**：
 
-**已排除的可能**（逐条做了对照实验）：
+| 步骤 | 结果 |
+| --- | --- |
+| 摘掉本 Mod 的 jar，假人上线 | ✅ `bot_a joined the game` |
+| 装回修复前的 jar（带自定义参数类型） | ❌ 停在「已登录未进游戏」，日志里**一个字都没有** |
+| 装回修复后的 jar | ✅ `bot_a joined the game` |
+| 修复后的服务端上假人进服耗时 | 首次约 2 分钟（**Mojang 档案查询超时**，档案缓存后秒进） |
 
-1. **不是本 Mod 的 Mixin**：把 Mixin 集合退回 P0 的 9 个后，问题依旧。
-2. **不是 P1/P2 的会话与扩展改动**：把 `SessionManager` 与 `ThemisStatsExtension` 退回 P0 后，问题依旧。
-3. **不是数据库 schema**：v4 → v5 → v6 的迁移在同一个服务端上实测通过，采集与查询都正常。
-4. **是本机到 Mojang 的网络**：日志里能看到明确的证据——
+**仍然存在的环境限制**（只影响新建假人的速度，不影响功能）：
 
-   ```
-   [Download-1/WARN]: Couldn't look up profile properties for 7ca81d03-...
-   Caused by: java.net.SocketTimeoutException: Read timed out
-   at ...MinecraftClient.get(...)  https://sessionserver.mojang.com/session/minecraft/profile/...
-   ```
+- 本机 JVM 到 `sessionserver.mojang.com` 的请求会超时。Carpet 建假人时要先取游戏档案，
+  所以**第一次**建假人约要 2 分钟；档案缓存之后（`server/usercache.json`）就是秒进。
+  脚本会轮询玩家列表直到假人出现，超时会明确打印，不会假装成功。
+- 因此**规格里的 20 真人／100 假人负载对照无法达到**（见第 8 节）。
 
-   PowerShell 能访问同一个地址（200 OK），但 **JVM 读超时**；加上 JVM 代理参数后档案能取到，
-   假人却因为**真实 Mojang 档案带来的皮肤下载**再次卡住。
-   Carpet 的 `EntityPlayerMPFake#createFake` 会先 `fetchGameProfile(...)` 再 `placeNewPlayer(...)`，
-   任何一次档案／皮肤请求卡住，假人就停在「已登录但没进游戏」。
-
-5. **对照实验**：同一台机器、同一套服务端，**已发布的 P0 jar**（`themis-stats-1.21.11-V20261020.0.1.0.jar`）
-   在 22:06 那次运行里假人 **5 秒内正常上线**。这说明环境本身是可用的，只是**极其不稳定**，
-   与本 Mod 的代码没有稳定复现的因果关系。
-
-**因此下列项目标记为「未执行」，不冒充通过**：
-
-- 告警的**端到端触发**（低生命值 → 恢复通知 → 停滞窗口）。告警的存储、冷却、恢复标记、
-  掩码与权限判定都有自动测试覆盖，但「在真实服务端上真的发出一条告警」没有跑出来。
-- `watch` / `unwatch` 的**完整交互**（命令本身在服务端上执行过，但当时假人已离线，订阅者缺失）。
-- 七类增强指标的**本轮采集**（`crafted`、`piglin_barters` 从未在服务端上跑出来；
-  `damage_dealt` / `damage_taken` 的修复也只做到「按 1.21.11 源码核对」这一步）。
-
-**已实测通过、不受这个阻塞影响的部分**（全部在同一个服务端上执行过）：
+**第二轮已经在真实服务端上跑出来的部分**（`tools/e2e_test.py`）：
 
 | 功能 | 实测输出 |
 | --- | --- |
+| 假人上线与身份 | `[ThemisStats] 会话开始：bot_a（7ca81d03-…）身份=假人`；「假人状态采样：观察到 1 个在线假人」 |
+| 命令树参数类型自检 | 启动日志：`命令树参数类型自检通过，共 966 种，全部为原版已注册类型` |
+| `watch` / `unwatch` | 控制台执行被拒（「关注需要由玩家执行。」）；以玩家身份执行后 `watch_subscription` 出现一行（订阅者＝玩家本人，掩码 23＝全部类型去掉 `metric_stall`）；`unwatch` 后该行消失 |
+| 细分榜 | `/themisstats fine mining "minecraft:stone" bot` → 「细分榜 · 挖掘量 · minecraft:stone」`#1 bot_a 5`、`#2 Bench_A 3` |
+| 诊断榜 | `/themisstats admin board mining bot survival "minecraft:stone" minecraft:overworld` → 「模式：survival；维度：minecraft:overworld；分类：minecraft:stone」 |
+| 低生命值告警 | `alert_log` 出现 `low_health`：「【Themis Stats】bot_a 的生命值已连续两次低于 6.0（当前 5.0）」；恢复后出现 `low_health_recovered`：「【Themis Stats】bot_a 的「低生命值」状态已恢复。」 |
+| 工具低耐久告警 | 主手铁镐剩余 2% → `low_durability`：「【Themis Stats】bot_a 的主手工具 minecraft:iron_pickaxe 剩余耐久 2%（阈值 10%）」；换新镐后 → `low_durability_recovered`：「【Themis Stats】bot_a 的「工具低耐久」状态已恢复。」 |
+| 指标停滞告警 | 5 分钟窗口后 `metric_stall`：「【Themis Stats】bot_a 在最近 5 分钟的有效采集窗口内，指定指标「挖掘量」没有增长（当前 5）。这只说明观察期内该指标无增长，不能据此判断机器是否故障。」 |
+| 七类增强指标 | 见 A33；`crafted` 除外（需要真实客户端界面） |
+| 猪灵交换 | 假人右键命中猪灵 → 猪灵副手拿到 `minecraft:gold_ingot`；等猪灵欣赏完（119 刻）换出物品后，`piglin_barters` 增量 **1**（分类 `minecraft:piglin`） |
+| 假人死亡 | 假人被 `minecraft:magic` 打死 → `deaths` 指标 +1（分类 `magic`），会话结束情况＝「死亡后离线」 |
 | 18 条规则 | `/carpet list themisStats` 列出 18 条带中文说明的规则；日志 `registered the themisStats rule category (18 rules)` |
-| 细分榜 | `/themisstats fine mining minecraft:stone bot` → `#1 bot_a 5`、`#2 Bench_A 3` |
-| 诊断榜 | `/themisstats admin board mining bot survival minecraft:stone minecraft:overworld` → 「模式：survival；维度：minecraft:overworld；分类：minecraft:stone」 |
-| 会话对比 | `/themisstats compare Bot_A bot mining` → 时长差 13 分 36 秒、挖掘量 1 → 2、速率 0.14 → 1.67 次/分钟 |
 | 显式导入 | 「导入完成：写入 2 行，跳过 2 行」＋逐行原因（非法 UUID、未知指标） |
 | 导入不进公共榜 | 导入历史 8,484，而公共榜全服总计仍是 **8** |
 | 工程计量 | 「已把 bot_a 归入工程「my-farm」」；工程榜 `bot_a: 5`、工程合计 5、共 2 个成员 |
@@ -259,7 +368,8 @@
 4. 真实客户端同时查看不同榜单（A29 的客户端侧）。
 5. 20 真人／100 假人的负载对照（A30）——见第 8 节。
 6. 村民交易与钓获的**完整**交互路径。
-7. 权限插件接入后的节点行为（A39）。
+7. `crafted` 增强指标（计数点在 `ResultSlot#onTake`，只有真实客户端点击合成结果才会触发）。
+8. 权限插件接入后的节点行为（A39）。
 
 上述项目在 `README.md` 的「仍未实现」与本文件之外**没有**任何占位命令或无效开关来假装它们可用。
 
@@ -307,24 +417,32 @@
 # 单元测试（真实 SQLite，验证公开值公式与排名规则）
 ./gradlew test
 
-# 运行自动化场景
+# 第二轮新增的端到端自测（自动起服、自动收尾、逐项 PASS/FAIL）
+python tools/e2e_test.py                 # 五个阶段全跑
+python tools/e2e_test.py basic watch     # 只跑指定阶段
+python tools/e2e_test.py --keep-server   # 测完不关服务端
+
+# 旧的场景脚本
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/run-server-test4.ps1
 # P1/P2 场景
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/run-p1p2-test.ps1
 # 结果日志：server/logs/latest.log
 # 数据检查：python tools/inspect_db.py
+# RCON 驱动（内容核对用控制台，数据核对用统计库）：python tools/rcon.py "list"
 ```
 
 > 注意：本机到 Mojang 会话服务器的连接不稳定，Carpet 创建假人时会异步解析游戏档案，
-> 因此假人可能需要**等很久甚至一直**停在「已登录但没进游戏」。测试脚本会轮询 `themisstats bots`
-> 直到假人出现再继续；超时会明确打印，不会假装成功。
+> 因此**第一次**建假人可能要等一两分钟（档案缓存后秒进）。`tools/e2e_test.py` 会轮询
+> 玩家列表直到假人出现再继续；超时会明确打印，不会假装成功。
 
 手工核对要点：
 
 1. `/carpet list themisStats` → 18 条规则，中文说明。
 2. `/player Bot_A spawn` → 假人上线（受第 7.1 节的网络问题影响）。
 3. `/themisstats admin flush` → `/themisstats top mining bot` → 挖掘累计。
-4. `/themisstats fine mining minecraft:stone bot` → 细分榜（分类参数带 `:`，用自定义参数类型解析）。
+4. `/themisstats fine mining "minecraft:stone" bot` → 细分榜（分类参数是原版已注册的
+   `StringArgumentType.string()`，**带 `:` 必须加引号**；本 Mod 不自造参数类型，
+   否则原版客户端解析不了命令树、玩家会进不了服，见第 0-A.1 节）。
 5. `/themisstats admin board mining bot survival minecraft:stone minecraft:overworld` → 诊断榜。
 6. `/themisstats compare Bot_A bot mining` → 最近两次会话对比。
 7. `/themisstats admin import <csv>` → `/themisstats admin imported mining bot` → 导入数据可见，

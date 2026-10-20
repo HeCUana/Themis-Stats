@@ -158,6 +158,10 @@ public final class ThemisStatsExtension implements CarpetExtension {
     public void registerCommands(com.mojang.brigadier.CommandDispatcher<CommandSourceStack> dispatcher,
                                  CommandBuildContext buildContext) {
         command.register(dispatcher, buildContext);
+        // The command tree is serialised for every player that joins. An argument type that the
+        // vanilla client does not know would make the serialisation throw and disconnect the
+        // player, so the tree is checked once, here.
+        dev.themisstats.command.ArgumentTypeSelfCheck.verify(dispatcher);
     }
 
     /**

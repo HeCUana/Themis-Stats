@@ -101,4 +101,43 @@ class MetricTest {
             assertTrue(list.contains(metric.id()), metric.id());
         }
     }
+
+    @Test
+    void aResourceLocationCategoryMayBeWrittenWithoutItsNamespace() {
+        assertEquals("minecraft:stone", Metric.MINING.normalizeCategory("stone"));
+        assertEquals("minecraft:stone", Metric.MINING.normalizeCategory("minecraft:stone"));
+        assertEquals("minecraft:zombie", Metric.KILLS.normalizeCategory("zombie"));
+    }
+
+    @Test
+    void aPlainWordCategoryIsNeverGuessed() {
+        // The death, damage and movement categories are words, not resource locations. Adding a
+        // namespace to them would silently show an empty leaderboard.
+        assertEquals("mob", Metric.DEATHS.normalizeCategory("mob"));
+        assertEquals("genericKill", Metric.DEATHS.normalizeCategory("genericKill"));
+        assertEquals("walk", Metric.MOVEMENT.normalizeCategory("walk"));
+        assertEquals("mob", Metric.DAMAGE_TAKEN.normalizeCategory("mob"));
+    }
+
+    @Test
+    void anEmptyCategoryStaysEmpty() {
+        for (Metric metric : Metric.values()) {
+            assertEquals("", metric.normalizeCategory(""));
+            assertNull(metric.normalizeCategory(null));
+        }
+    }
+
+    @Test
+    void theIdentifierCategoriesAreTheBlockItemAndEntityOnes() {
+        assertTrue(Metric.MINING.categoryIsIdentifier());
+        assertTrue(Metric.PLACEMENT.categoryIsIdentifier());
+        assertTrue(Metric.KILLS.categoryIsIdentifier());
+        assertTrue(Metric.DAMAGE_DEALT.categoryIsIdentifier());
+        assertTrue(Metric.CRAFTED.categoryIsIdentifier());
+        assertTrue(Metric.PICKED_UP.categoryIsIdentifier());
+        assertTrue(Metric.DROPPED.categoryIsIdentifier());
+        assertFalse(Metric.DEATHS.categoryIsIdentifier());
+        assertFalse(Metric.DAMAGE_TAKEN.categoryIsIdentifier());
+        assertFalse(Metric.MOVEMENT.categoryIsIdentifier());
+    }
 }

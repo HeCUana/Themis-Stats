@@ -24,6 +24,8 @@ logs/
 
 # Local test server: world, logs, downloaded mods and libraries are machine local
 server/
+# Throwaway copy of the test server used by the save failure test
+server-sf-test/
 *.pid
 
 # Local tool output
@@ -31,3 +33,7 @@ tools/*.log
 tools/benchmark-*.txt
 tools/benchmark-result.txt
 tools/patch_*.py
+
+# Python scratch
+tools/__pycache__/
+tools/_*.py

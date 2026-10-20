@@ -1,6 +1,6 @@
 # 版本与依赖核对说明
 
-日期：2026-10-20
+日期：2026-10-21
 项目：Themis Stats（忒弥斯统计）`0.1.0`
 
 本文件记录本项目**实际使用**的版本，以及每个版本是如何核对出来的。所有 API 结论都来自
@@ -84,6 +84,32 @@ MinecraftServer.loadLevel -> CarpetServer.onServerLoaded -> 扩展的 onServerLo
 命令分发器在**世界加载之前**建立，因此 `/themisstats` 的命令树在注册时拿不到数据库服务。
 命令实现因此在**执行时**通过 `ThemisStatsRuntime.services()` 解析服务，而不是在注册时持有引用。
 
+### 一次性动作的执行时机（实测确认，脚本化自测必须知道）
+
+Carpet 的一次性动作（`/player <名字> use once`、`drop`、`dropStack` 等）与控制台命令的**生效时刻不一样**：
+
+```
+某个 tick:  实体 tick（假人的动作计划在这里执行）   ->  控制台命令队列在 tick 结束后才被清空
+```
+
+- 动作由 `EntityPlayerActionPack#tick` 触发，**在实体 tick 期间**执行；
+- 控制台命令由 `MinecraftServer#runAllTasks()` 在**该 tick 结束后**统一执行；
+- 因此「先转向再右键」如果写在**同一条指令链**里，右键执行时转向还没生效；
+  而且 `use once` 是**一次性**动作（`Action#once()` 的 `limit=1`），打空一次就没有了。
+
+**结论**：脚本化自测要让动作依赖的命令**提前一批**发出去，等它落地后再发动作。
+
+> 注意 `/player <名字> drop` 与 `/player <名字> drop mainhand` **不是一回事**：
+> 前者是 `makeActionCommand("drop", ActionType.DROP_ITEM)`，走 `Player#drop(boolean)`，
+> **下一个 tick 才执行**；后者是 `makeDropCommand`，立即调用 `player.drop(ItemStack, boolean, boolean)`。
+> 本 Mod 的 `dropped` 计数点挂在 `ServerPlayer#drop(Z)V` 上，所以**只有前者会被统计**。
+
+### 假人会把自己丢出来的东西捡回去
+
+`ServerPlayer#drop` 生成的掉落物有 **10 tick** 的拾取延迟，假人站在原地就会把它收回主手。
+所以「丢整组时记了几个」这种断言，必须在每次丢弃前用 `item replace` 重新铺好一组**已知数量**的物品，
+否则主手数量会自己涨回去，断言变成「碰巧对上」。
+
 ---
 
 ## 4. Minecraft 1.21.11 的 API 核对
@@ -114,15 +140,21 @@ MinecraftServer.loadLevel -> CarpetServer.onServerLoaded -> 扩展的 onServerLo
 | `movement` | `Entity#move(MoverType, Vec3)` | 只统计 `MoverType.SELF`；传送与活塞推动是别的 `MoverType`，不会进来 |
 | `crafted` | `ResultSlot#onTake(Player, ItemStack)` | 取一次合成结果计 1 |
 | `picked_up` | `ItemEntity#playerTouch(Player)` 里的 `Inventory#add(ItemStack)` 调用点 | 数量取「加入前件数 − 加入后件数」；**物品名必须在 `Inventory.add` 之前读**，因为整叠被收下时原版会把栈清空再把件数还原，清空后的 `getItem()` 是 `minecraft:air` |
-| `dropped` | `ServerPlayer#drop(Z)V` | 必须写完整描述符，`drop` 有重载 |
-| `piglin_barters` | `PiglinAi#stopHoldingOffHandItem(ServerLevel, Piglin, boolean)` ＋ `PiglinAi#throwItemsTowardPlayer(Piglin, Player, List<ItemStack>)` | 两个方法都是 `static`；猪灵交易的方法在 `PiglinAi` 而不在 `Piglin`。只有 `bl=true` 的那次完成才算交换，归属取实际被丢物品的玩家 |
+| `dropped` | `ServerPlayer#drop(Z)V` | 必须写完整描述符，`drop` 有重载。**数量语义**：`drop(false)`（按 Q）只丢**一个**，`drop(true)`（Ctrl+Q）才丢**整组**——`Inventory#removeFromSelected` 只在 `true` 时取整叠数量，所以计数必须跟着标志走，不能直接取 `getSelectedItem().getCount()`。**死亡掉落不计数**：死亡走 `Inventory#dropAll` → `player.drop(ItemStack, boolean, boolean)`，不是这条路径 |
+| `piglin_barters` | `PiglinAi#stopHoldingOffHandItem(ServerLevel, Piglin, boolean)` ＋ `PiglinAi#throwItemsTowardPlayer(Piglin, Player, List<ItemStack>)` | 两个方法都是 `static`；猪灵交易的方法在 `PiglinAi` 而不在 `Piglin`。只有 `bl=true` 的那次完成才算交换，归属取实际被丢物品的玩家（`MemoryModuleType.NEAREST_VISIBLE_PLAYER`，由 `PlayerSensor` 写入）。**实测时要避开四个原版机制**：① **1.21.11 的猪灵转换不再由游戏规则控制**——`piglinConversion` 规则已经不存在，转换由 `AbstractPiglin#customServerAiStep` 的 `timeInOverworld > 300` 触发（主世界 15 秒），解法是给猪灵加 NBT 标志 `IsImmuneToZombification:1b`（原版自己就是这么防转换的）；② 附近没金子时猪灵会「恐慌」乱跑，10 秒能跑出 8 格，早就超出 5 格触及范围，所以金锭要先拿在手上；③ **猪灵会自己捡地上的金锭**（`ItemTags.PIGLIN_LOVED`），捡到就进入「欣赏」状态，此时 `PiglinAi#canAdmire` 为假（`ADMIRING_ITEM` 记忆存在），**再右键它也不收**，所以测之前要 `kill @e[type=minecraft:item]`；④ 假人必须是**创造模式**：生存模式下玩家会被当成可攻击目标，猪灵会直接把它打死（实测 `bot_a was slain by Piglin`）。另外 1.21.11 的 `PiglinAi#BARTERING_ITEM` 是**单个物品** `Items.GOLD_INGOT`（不是标签），兑换判定是 `itemStack.is(Items.GOLD_INGOT)` |
 
 ### P2 的两个实现要点
 
 | 用途 | API | 结论 |
 | --- | --- | --- |
-| 含 `:` 的参数 | Brigadier `StringArgumentType#word()` | 只允许字母、数字与 `_- . +`，**不允许 `:`**，因此 `minecraft:stone` 会被判成「found trailing data」。本 Mod 自带一个 `TokenArgumentType`，按空白切分并原样返回 |
+| 含 `:` 的参数 | Brigadier `StringArgumentType#string()` | `word()` 只允许字母、数字与 `_- . +`，**不允许 `:`**；`string()` 不加引号时同样不接受 `:`，**加引号可以**。因此分类参数用 `string()`，写 `minecraft:stone` 时要加引号。**不要自造参数类型**——见下一行 |
+| **参数类型必须原版已注册** | `net.minecraft.commands.synchronization.ArgumentTypeInfos` | 原版在 `PlayerList#placeNewPlayer` 里（经 `sendPlayerPermissionLevel` → `Commands#sendCommands`）**为每个进服的玩家序列化整棵命令树**，序列化器要为每个参数类型在 `ArgumentTypeInfos` 里找登记项。自定义类型没登记就抛 `IllegalArgumentException`，而这个异常被 Carpet 静默吞掉 —— 服务端日志里一个字都没有，**所有玩家都进不了世界**。所以本 Mod **只使用原版已注册的类型**：分类用 `StringArgumentType.string()`，维度用 `IdentifierArgument.id()`。注册进 `ArgumentTypeInfos` 也没用：原版客户端不认识自定义类型 |
 | 含空格的路径 | Brigadier `StringArgumentType#greedyString()` | `string()` 遇到空格就断，必须用 `greedyString()` |
+
+> 防回归：命令注册后由 `dev.themisstats.command.ArgumentTypeSelfCheck` 扫描整棵命令树，
+> 发现原版未登记的参数类型就 ERROR 日志（启动日志实测：「命令树参数类型自检通过，共 966 种，
+> 全部为原版已注册类型」）。
+
 
 ---
 

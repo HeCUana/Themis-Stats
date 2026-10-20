@@ -167,7 +167,7 @@ public final class ThemisStatsCommand {
         // 细分榜：<指标> <分类> [身份] [页码]
         var fineMetric = Commands.argument("metric", StringArgumentType.word())
                 .suggests((ctx, builder) -> SharedSuggestions.suggestMetrics(builder));
-        var fineCategory = Commands.argument("category", TokenArgumentType.INSTANCE);
+        var fineCategory = Commands.argument("category", StringArgumentType.string());
         var fineIdentity = Commands.argument("identity", StringArgumentType.word())
                 .suggests((ctx, builder) -> SharedSuggestions.suggestIdentities(builder));
         var finePage = Commands.argument("page", IntegerArgumentType.integer(1));
@@ -845,7 +845,8 @@ public final class ThemisStatsCommand {
             source.sendFailure(CommandTexts.error("指标 " + metric.displayName() + " 没有分类细目，无法生成细分榜。"));
             return 0;
         }
-        String category = StringArgumentType.getString(ctx, "category");
+        // A resource location may be written without its namespace: stone -> minecraft:stone.
+        String category = metric.normalizeCategory(StringArgumentType.getString(ctx, "category"));
         int pageNumber = page;
         if (!services().permissions().canQueryPublic(source)) {
             source.sendFailure(CommandTexts.error("公开查询当前已关闭。"));

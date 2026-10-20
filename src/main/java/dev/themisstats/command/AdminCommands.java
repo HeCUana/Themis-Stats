@@ -67,11 +67,13 @@ public final class AdminCommands {
                                         .then(boardDimension
                                                 .executes(ctx -> adminBoard(ctx,
                                                         StringArgumentType.getString(ctx, "category"),
-                                                        StringArgumentType.getString(ctx, "dimension"), 1))
+                                                        net.minecraft.commands.arguments.IdentifierArgument
+                                                                .getId(ctx, "dimension").toString(), 1))
                                                 .then(boardPage
                                                         .executes(ctx -> adminBoard(ctx,
                                                                 StringArgumentType.getString(ctx, "category"),
-                                                                StringArgumentType.getString(ctx, "dimension"),
+                                                                net.minecraft.commands.arguments.IdentifierArgument
+                                                                        .getId(ctx, "dimension").toString(),
                                                                 IntegerArgumentType.getInteger(ctx,
                                                                         "page"))))))))))
                 .then(Commands.literal("import")
@@ -677,16 +679,18 @@ public final class AdminCommands {
             }
         }
         int pageNumber = page;
+        // A resource location may be written without its namespace: stone -> minecraft:stone.
+        String categoryFilter = metric.normalizeCategory(category);
 
         runAdmin(source, () -> {
             List<Component> lines = new ArrayList<>();
             var scope = dev.themisstats.storage.StatsRepository.Scope.of(metric, identity, modes, dimension,
-                    category);
+                    categoryFilter);
             var entries = services().stats().board(scope, pageNumber, 10);
             lines.add(CommandTexts.title("诊断榜 · " + metric.displayName() + " · " + identity.displayName()));
             lines.add(CommandTexts.hint("模式：" + (modes.isEmpty() ? "全部" : String.join("、", modes))
                     + "；维度：" + (dimension.isEmpty() ? "全部" : dimension)
-                    + "；分类：" + (category.isEmpty() ? "全部" : category)));
+                    + "；分类：" + (categoryFilter.isEmpty() ? "全部" : categoryFilter)));
             if (entries.isEmpty()) {
                 lines.add(CommandTexts.line("该范围内暂无数据。"));
             } else {
@@ -708,9 +712,9 @@ public final class AdminCommands {
     private static final com.mojang.brigadier.builder.RequiredArgumentBuilder<CommandSourceStack, String>
             boardModes = Commands.argument("modes", StringArgumentType.word());
     private static final com.mojang.brigadier.builder.RequiredArgumentBuilder<CommandSourceStack, String>
-            boardCategory = Commands.argument("category", TokenArgumentType.INSTANCE);
-    private static final com.mojang.brigadier.builder.RequiredArgumentBuilder<CommandSourceStack, String>
-            boardDimension = Commands.argument("dimension", TokenArgumentType.INSTANCE);
+            boardCategory = Commands.argument("category", StringArgumentType.string());
+    private static final com.mojang.brigadier.builder.RequiredArgumentBuilder<CommandSourceStack, net.minecraft.resources.Identifier>
+            boardDimension = Commands.argument("dimension", net.minecraft.commands.arguments.IdentifierArgument.id());
     private static final com.mojang.brigadier.builder.RequiredArgumentBuilder<CommandSourceStack, Integer>
             boardPage = Commands.argument("page", IntegerArgumentType.integer(1));
 

@@ -308,6 +308,12 @@
 /themisstats watch Bot_A bot metric_stall mining
 ```
 
+> **实测状态**（2026-10-21，服务端真实执行，`tools/e2e_test.py`）：`low_health`（含恢复通知）、
+> `low_durability`（含恢复通知）、`metric_stall` 三类**端到端触发并落库**；
+> `unexpected_offline` 与 `save_failure` **未执行** —— 前者需要第二个真实玩家当订阅者
+> （订阅者本人就是被观察对象，它自己掉线后收不到发给自己的告警），
+> 后者需要真的把运行中的数据库写坏。
+
 ---
 
 ## 10. 显式数据导入（P2）
@@ -435,15 +441,25 @@ themis_stats_top('mining', 'bot', 1)         -> 第一页的 [名字, 数值] �
 
 以下内容**没有**在当前版本里实现，本 Mod 也没有注册任何对应的假命令或无效开关来假装它们可用：
 
-> **本机到 Mojang 会话服务器的网络不稳定**，Carpet 假人经常停在「已登录但没进游戏」。
-> 因此**运行告警的端到端触发**、**七类增强指标的本轮采集**、**watch/unwatch 的完整交互**
-> 没有在真实服务端上跑出来。已用对照实验逐条排除了本 Mod 的 Mixin、会话改动与 schema 迁移，
-> 详见 [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) 第 7 节。
+> **第二轮已经推翻上一版的结论**：上一版说「假人进不了服是环境问题（Mojang 网络）」，
+> 那是**错的**。真实原因是本 Mod 自己注册了原版不认识的 Brigadier 参数类型，
+> 原版在玩家进服时序列化命令树会抛异常，异常被 Carpet 静默吞掉，**所有玩家都进不了世界**。
+> 该缺陷已修复，并加了启动自检（发现未注册的类型会 ERROR 日志）与单元测试防回归。
+> 详见 [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) 第 0-A 节。
+>
+> 现在**告警的端到端触发**、**watch/unwatch 的完整交互**、**七类增强指标**（除 `crafted`）
+> 都已经在真实服务端上跑通了，脚本是 `tools/e2e_test.py`：
+> 2026-10-21 的第三轮全流程回归 **41 / 41 全部通过**
+> （`python tools/e2e_test.py basic watch metrics alert stall`）。
 
 - 原版客户端侧的完整交互（登录、侧栏渲染、按钮点击、分页跳转、分享预览）。
 - 真人玩家的登录／下线与 Shadow 切换：Carpet 1.4.194 禁止给假人创建 Shadow，因此**无法用假人复现**。
 - 鞘翅飞行的真实距离累计（公式与边界已有自动测试，真实飞行需要客户端）。
 - 村民交易与钓获的**完整**交互路径（钩子本身已按 1.21.11 源码实现并核对，钓获的端到端交互未实测）。
+- `crafted` 增强指标：计数点在 `ResultSlot#onTake`，只能由真实客户端在合成台／物品栏里点击取结果才会触发，
+  命令与假人都做不到。
+- 告警里的**意外离线**与**保存异常**两类：意外离线需要第二个真实玩家当订阅者
+  （订阅者本人就是被观察对象，它自己掉线后收不到发给自己的告警）；保存异常需要真的把运行中的数据库写坏。
 - 规格建议的 **20 真人／100 假人** 负载对照（本机无法达到，见第 15 节）。
 
 本 Mod 不自动禁用 `/player`，不批量修改 Carpet 的其他规则，不自动导入原版统计文件，
@@ -476,12 +492,29 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/run-p1p2-test.ps1
 # 击杀归属的定向验证
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/run-kill-test.ps1
 
+# 端到端自测（自动起服、自动收尾、逐项 PASS/FAIL，并直接断言统计库里的数字）
+python tools/e2e_test.py                 # 五个阶段全跑
+python tools/e2e_test.py basic watch     # 只跑指定阶段
+python tools/e2e_test.py --keep-server   # 测完不关服务端
+
 # 直接检查统计数据库
 python tools/inspect_db.py
 ```
 
+`tools/e2e_test.py` 的五个阶段是 `basic`（假人上线与命令树自检）、`watch`（关注／取消关注）、
+`metrics`（七类增强指标）、`alert`（低生命值与低耐久告警及恢复）、`stall`（5 分钟观察窗口的停滞告警）。
+命令通过服务端控制台的标准输入下发（这样命令以「控制台」身份执行，输出直接写进服务端日志可以逐条核对），
+数据结论直接断言统计库。RCON 也能驱动服务端（`tools/rcon.py`），但它的来源是一次性缓冲区，
+读不到后台线程延迟返回的查询结果，所以内容核对用控制台。
+
 脚本会轮询直到假人真正上线（Carpet 创建假人时会异步解析游戏档案，机器无法访问 Mojang 会话服务器时
 这一步可能耗时约一分钟）。
+
+脚本化自测有两个时序上的坑（不是本 Mod 的问题，但会让用例「看起来像功能坏了」）：
+Carpet 的一次性动作（`use once`）在**实体 tick 期间**执行，而控制台命令要到**该 tick 结束后**才生效，
+所以「转向 → 右键」必须**分两批发**；另外假人会把自己丢出来的东西**捡回去**，
+所以丢完要立刻 `kill @e[type=minecraft:item]`。细节见
+[`docs/VERSIONS.md`](docs/VERSIONS.md) 与 [`docs/ACCEPTANCE.md`](docs/ACCEPTANCE.md) 第 0-B.1 节。
 
 版本与依赖的核对说明见 [`docs/VERSIONS.md`](docs/VERSIONS.md)，
 P0 验收矩阵（含**未执行项**的明确说明）见 [`docs/ACCEPTANCE.md`](docs/ACCEPTANCE.md)。

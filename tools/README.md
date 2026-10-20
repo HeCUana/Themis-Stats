@@ -14,6 +14,16 @@
 | `run-benchmark.ps1` | 启用 / 停用 Themis Stats 的小规模性能对照，结果写入 `benchmark-result.txt` |
 | `run-diag.ps1` | 排查用：起服、召唤一个假人、打印它有没有真正进游戏 |
 | `inspect_db.py` | 直接读取测试世界的 `stats.db`，打印累计、会话、排除、修正与审计表的内容 |
+| **`e2e_test.py`** | **端到端自测**：自动起服 → 五个阶段逐项验证 → 汇总 PASS/FAIL → 自动收尾。命令走控制台标准输入（输出进服务端日志可逐条核对），数据结论直接断言统计库 |
+| `console_server.py` | `e2e_test.py` 的底层：用标准输入驱动服务端控制台的库 |
+| `rcon.py` | 纯标准库的 RCON 客户端（协议按原版 `RconClient` 对齐），用来快速驱动服务端 |
+| `start-server-rcon.ps1` | 开 RCON、后台起服、日志重定向的辅助脚本 |
+| `deploy.ps1` | 把 `build/libs/themis-stats-0.1.0.jar` 复制到 `server/mods/`（写进 `server/` 只能走脚本） |
+| `debug_piglin.py` | 单独调试「猪灵交换」：把每一步（坐标、手上物品、交互后状态）都打出来 |
+| `debug_piglin2.py` … `debug_piglin5.py` | 猪灵用例的分步排查：射线有没有命中（用 `attack` 探针）、假人手里有没有金锭、猪灵的副手与 Brain 记忆、掉落物干扰、**分两批发指令的时序**。结论已经写进 `docs/VERSIONS.md` 与 `docs/ACCEPTANCE.md` |
+| `save_failure_test.py` | 验证「保存异常」告警的端到端触发：**在服务端副本上**破坏运行中的数据库，看告警是否发出（主测试库不受影响） |
+| `experiment-no-mod.ps1` | 对照实验：摘掉本 Mod 的 jar 起服，验证假人能否正常上线 |
+| `mc_client.py` | **未完成的实验工具**：最小 1.21.11 协议客户端骨架，尚未联调通过，不要当成可用工具 |
 
 ## 使用
 
@@ -25,8 +35,12 @@
 #   server/mods 放入 carpet、fabric-api 与 themis-stats 的 jar
 #   server.properties 设置 online-mode=false、pause-when-empty-seconds=0
 
-# 单元测试（真实 SQLite，109 个用例）
+# 单元测试（真实 SQLite，115 个用例）
 ./gradlew test
+
+# 端到端自测（推荐；自动起服、自动收尾）
+python tools/e2e_test.py
+python tools/e2e_test.py basic watch metrics alert stall
 
 # 跑完整验收场景
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/run-server-test4.ps1
@@ -43,11 +57,21 @@ python tools/inspect_db.py
 
 ## 三个环境限制（会影响可执行的验收范围）
 
-1. **无法访问 Mojang 会话服务器**。Carpet 创建假人时会异步解析游戏档案，解析失败要等超时，
-   有时候假人会一直停在「已登录但没进游戏」，导致依赖假人在线的场景跑不出来。
+1. **本机到 Mojang 会话服务器慢**。Carpet 创建假人时会异步解析游戏档案，解析要等超时，
+   所以**第一次**建假人可能要一两分钟（档案缓存之后是秒进）。这不影响功能，只是慢。
    脚本会**如实报告**假人没有上线，不会假装通过。
-2. **没有原版客户端**，因此侧栏的实际渲染、按钮点击、分享预览一类交互无法手测。
+2. **没有原版客户端**，因此侧栏的实际渲染、按钮点击、分享预览、`crafted` 增强指标一类交互无法手测。
 3. **规格要求的 20 真人／100 假人负载达不到**，性能对照只能做小规模的 A/B。
+
+## 脚本化自测的两个时序坑（会让人误以为功能坏了）
+
+1. **一次性动作在命令之前生效**。`/player <名字> use once` 这类一次性动作在**实体 tick 期间**执行，
+   而控制台命令是在**该 tick 结束后**才被清空执行的。所以「转向 → 右键」写在同一条指令链里时，
+   右键执行时**转向还没生效**，而且 `use once` 是一次性的，打空就没有了。
+   **正解**：分两批发——先 `tp` + `look`，等命令落地后再单独发 `use once`。
+2. **假人会把自己丢出来的东西捡回去**。掉落物有 10 tick 的拾取延迟，假人站在原地就把它收回主手，
+   于是「丢整组」的数量对不上。**正解**：丢完立刻 `kill @e[type=minecraft:item]`（同一条指令链里执行，
+   拾取延迟还没到）。
 
 ## 排查假人为什么没上线
 
@@ -58,6 +82,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/run-diag.ps1
 脚本会起服、召唤 `Bot_A`、等 90 秒，然后把日志里与「登录」「进游戏」「会话开始」「档案查询超时」
 有关的行打出来。常见结论：
 
-- 出现 `Read timed out` / `Couldn't look up profile properties` → **本机到 Mojang 的网络问题**，
-  与本 Mod 无关。
-- 有 `logged in with entity id` 但没有 `joined the game` → 档案或皮肤请求卡住，**假人没有真正上线**。
+- 出现 `Read timed out` / `Couldn't look up profile properties` → **本机到 Mojang 的网络慢**，
+  假人要等档案解析，与本 Mod 无关；等一会儿就会进游戏。
+- 有 `logged in with entity id` 但没有 `joined the game` → **假人没有真正上线**。
+  这时先看日志里有没有 `[ThemisStats] 命令树参数类型自检通过`：
+  **没有这一行就说明命令树里有原版未注册的参数类型，原版序列化命令树时会抛异常，
+  异常被 Carpet 静默吞掉，于是所有玩家都进不了世界**（0.1.0 发布后的那个致命缺陷）。
+  有了这一行，才去查网络。
+

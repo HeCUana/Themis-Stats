@@ -298,7 +298,8 @@ themis_stats_top('mining', 'bot', 1)         -> 第一页的 [名字, 数值] �
 
 | 项目 | 结果 |
 | --- | --- |
-| 单元测试 | **109 个全通过**（真实 SQLite + 真实 schema，不是 mock） |
+| 单元测试 | **115 个全通过**（真实 SQLite + 真实 schema，不是 mock） |
+| 端到端自测 | `tools/e2e_test.py` 五个阶段（2026-10-21 全流程跑通）：假人上线与命令树自检、`watch`/`unwatch` 完整交互、七类增强指标、低生命值与低耐久告警及恢复、5 分钟窗口的停滞告警 |
 | 服务端实测 | 挖掘、放置、击杀（含 `minecraft:player` 分类）、死亡、统计在线时长、会话对比 |
 | 规则与命令 | `/carpet list themisStats` 输出 **18** 条带中文说明的规则；命令逐条跑通 |
 | 存储 | schema 1 → 2 → 3 → **4 → 5 → 6** 迁移实测，每次迁移前自动备份 |
@@ -308,15 +309,28 @@ themis_stats_top('mining', 'bot', 1)         -> 第一页的 [名字, 数值] �
 | 侧栏 64 位 | 排序分与业务值解耦、90 亿完整显示（自动用例） |
 | 性能对照 | 小规模 A/B：启用与停用的 CPU 时间差异落在运行间噪声内，两边**掉帧都是 0 条** |
 
+### 0.1.0 发布后修掉的三个致命缺陷（**建议尽快更新**）
+
+这一版是在 0.1.0 发布**之后**做第二轮实测时挖出来的，已全部修复：
+
+1. **所有玩家都进不了服**：本 Mod 注册了原版不认识的 Brigadier 参数类型，
+   原版在玩家进服时序列化命令树会抛异常，异常被 Carpet 静默吞掉。
+   已改为只用原版已注册的类型，并加了启动自检（发现未注册的类型会 ERROR 日志）。
+2. **玩家第一次受伤即崩服**：一个普通辅助类被放在了 Mixin 包里，Mixin 拒绝加载它。
+   已移到 `dev.themisstats.metric` 包，并加了单元测试防回归。
+3. **`dropped` 指标按整组计数**：按 Q 丢一个也会记成整叠的数量。已改成跟着原版语义走。
+
+> 上一版发布说明里写的「假人进不了服是 Mojang 网络问题」**是错的**，
+> 真实原因就是上面第 1 条。详见 `docs/ACCEPTANCE.md` 第 0-A 节。
+
 ### 明确未执行的部分
 
 这些**没有**在本次发布中执行，**不应**当作已通过（详见 `docs/ACCEPTANCE.md` 第 7 节）：
 
-- **本机到 Mojang 会话服务器的网络不稳定**，Carpet 假人经常停在「已登录但没进游戏」，
-  因此**运行告警的端到端触发**、**七类增强指标的本轮采集**、**watch/unwatch 的完整交互**
-  没有在真实服务端上跑出来。已用对照实验逐条排除了本 Mod 的 Mixin、会话改动与 schema 迁移。
 - 原版客户端连接后的完整操作：侧栏实际渲染、聊天菜单按钮、分享预览。
 - 真人玩家登录／下线、**Shadow 切换**、改名。
+- **`crafted` 增强指标**：计数点在 `ResultSlot#onTake`，只能由真实客户端点击合成结果触发。
+- 告警里的**意外离线**（需要第二个真实玩家当订阅者）与**保存异常**（需要真的把运行中的数据库写坏）。
 - **钓获的端到端路径**（咬钩窗口只有约 1 tick，自动假人无法稳定命中）。
 - 鞘翅飞行的**实飞**距离累计（测量逻辑已由 6 个自动用例覆盖）。
 - 两个真实客户端同时看不同榜单。
@@ -334,13 +348,15 @@ themis_stats_top('mining', 'bot', 1)         -> 第一页的 [名字, 数值] �
 ```bash
 # 需要 JDK 21
 ./gradlew build      # 产物：build/libs/themis-stats-0.1.0.jar
-./gradlew test       # 109 个单元测试
+./gradlew test       # 115 个单元测试
 ./gradlew runServer  # 启动隔离的测试服务端
 ```
 
 Windows 下用 `gradlew.bat`。发布包**已内嵌** SQLite 驱动，部署时不需要另外安装依赖。
 
-验收脚本在 `tools/`：`run-server-test4.ps1`（完整场景）、`run-p1p2-test.ps1`（P1/P2 场景）、
+验收脚本在 `tools/`：**`e2e_test.py`**（端到端自测：自动起服 → 五个阶段逐项 PASS/FAIL → 汇总）、
+`console_server.py`（用标准输入驱动服务端控制台）、`rcon.py`（RCON 客户端）、
+`run-server-test4.ps1`（完整场景）、`run-p1p2-test.ps1`（P1/P2 场景）、
 `run-alerts-test.ps1`（告警定向场景）、`run-kill-test.ps1`（击杀归属）、
 `run-corruption-test.ps1`（损坏注入）、`run-benchmark.ps1`（性能对照）、`inspect_db.py`（查库）、
 `start-server.ps1`（起一个带可见控制台的服务端）。
@@ -349,11 +365,14 @@ Windows 下用 `gradlew.bat`。发布包**已内嵌** SQLite 驱动，部署时�
 
 ## 发布物校验
 
+> 下面是**包含上面三个致命缺陷修复**的构建产物（`build/libs/themis-stats-0.1.0.jar`，
+> 与 `server/mods/` 里实测用的那一份逐字节一致）。
+
 ```
 文件   themis-stats-0.1.0.jar
-大小   12,245,499 字节
-SHA-256  6e6b184ae782e2a721bfe078a20ce3eb39b19094d18732095f4c5ce92dc520e7
-SHA-1    9c55dcf5db183251c6e0aac7624b4587817140
+大小   12,247,076 字节
+SHA-256  b93dbdf0def9ca728e2388aee08ccc1841ae138020428c2c1ad7f177d73c466e
+SHA-1    8826cdc6ea82c3fbf08009fea55c9f070762013c
 ```
 
 > JAR 打包会写入文件时间戳，因此**不是逐字节可复现**的：同样的源码重新构建会得到不同的 SHA-256
