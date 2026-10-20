@@ -19,7 +19,7 @@ try { if (Test-Path $log) { Remove-Item $log -Force -ErrorAction Stop } } catch 
 
 $psi = New-Object System.Diagnostics.ProcessStartInfo
 $psi.FileName = "$env:JAVA_HOME\bin\java.exe"
-$psi.Arguments = "-Xmx2G -Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=7897 -Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=7897 -jar `"$launcher`" nogui"
+$psi.Arguments = "-Xmx2G -jar `"$launcher`" nogui"
 $psi.WorkingDirectory = $server
 $psi.UseShellExecute = $false
 $psi.RedirectStandardInput = $true
@@ -42,7 +42,7 @@ while ((Get-Date) -lt $deadline) {
 }
 if (-not $ready) { Write-Output 'server not ready'; $proc.Kill(); exit 1 }
 
-$proc.StandardInput.WriteLine('player ThemisBot_Z1 spawn')
+$proc.StandardInput.WriteLine('player Bot_A spawn')
 $proc.StandardInput.Flush()
 Write-Output 'spawn requested, waiting 90 s'
 

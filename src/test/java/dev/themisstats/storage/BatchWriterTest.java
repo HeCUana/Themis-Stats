@@ -81,6 +81,18 @@ class BatchWriterTest {
                 + "，最后错误=" + writer.lastError() + "）");
     }
 
+    /**
+     * Waits until the writer really committed the batch.
+     *
+     * <p>The test uses the very same connection as the writer, so a plain read would already see
+     * the rows of the running transaction. The number of committed batches is only raised after
+     * the commit, so it is the point where the data is really there.</p>
+     */
+    private void awaitCommit() throws Exception {
+        long before = writer.committedBatches();
+        waitFor(() -> writer.committedBatches() > before, 30_000L);
+    }
+
     private interface FailCondition {
         boolean test() throws Exception;
     }
@@ -88,7 +100,7 @@ class BatchWriterTest {
     @Test
     void anIncrementIsCommittedToTheTotal() throws Exception {
         writer.submit(MetricBatch.of("batch-1", List.of(increment(3)), 1L));
-        waitFor(() -> totalOfStone() == 3L, 30_000L);
+        awaitCommit();
         assertEquals(3L, totalOfStone());
     }
 
@@ -96,7 +108,7 @@ class BatchWriterTest {
     void resubmittingTheSameBatchDoesNotAddItTwice() throws Exception {
         MetricBatch batch = MetricBatch.of("batch-double", List.of(increment(5)), 1L);
         writer.submit(batch);
-        waitFor(() -> totalOfStone() == 5L, 30_000L);
+        awaitCommit();
         // The very same batch is handed over again, as it would happen after a retry of an
         // unacknowledged commit.
         writer.submit(batch);
@@ -107,7 +119,7 @@ class BatchWriterTest {
     @Test
     void theBatchReceiptIsWrittenTogetherWithTheTotal() throws Exception {
         writer.submit(MetricBatch.of("batch-receipt", List.of(increment(2)), 1L));
-        waitFor(() -> totalOfStone() == 2L, 30_000L);
+        awaitCommit();
         try (Statement statement = connection.createStatement();
              ResultSet rs = statement.executeQuery(
                      "SELECT increments FROM applied_batch WHERE batch_id = 'batch-receipt'")) {
@@ -119,7 +131,7 @@ class BatchWriterTest {
     @Test
     void theSessionTotalIsWrittenTogetherWithTheTotal() throws Exception {
         writer.submit(MetricBatch.of("batch-session", List.of(increment(4)), 1L));
-        waitFor(() -> totalOfStone() == 4L, 30_000L);
+        awaitCommit();
         try (Statement statement = connection.createStatement();
              ResultSet rs = statement.executeQuery(
                      "SELECT value FROM session_metric WHERE session_id = 'session-1' AND metric = 'mining'")) {

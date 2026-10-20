@@ -219,7 +219,7 @@
 | `/themisstats admin board <指标> <身份> <模式> [分类] [维度] [页码]` | 诊断榜：可指定任意模式、分类与维度，不受公共模式范围限制 |
 | `/themisstats admin imported <指标> <身份>` | 查看显式导入进来的历史数据（与采集数据分开显示） |
 | `/themisstats admin import <文件>` | 显式导入 CSV（见下文「显式导入」） |
-| `/themisstats admin bot project <对象> <工程>` | 把对象归入一个工程 |
+| `/themisstats admin project <对象> <工程>` | 把对象归入一个工程 |
 
 **数据修正流程**：`admin adjust` 只做预览，列出受影响的具体明细范围与变化后的数值，并给出一个
 **确认令牌**；执行 `/themisstats admin confirm <令牌>` 才会真正写入。令牌绑定操作者、参数与 60 秒过期时间，
@@ -434,6 +434,11 @@ themis_stats_top('mining', 'bot', 1)         -> 第一页的 [名字, 数值] �
 ## 16. 仍未实现
 
 以下内容**没有**在当前版本里实现，本 Mod 也没有注册任何对应的假命令或无效开关来假装它们可用：
+
+> **本机到 Mojang 会话服务器的网络不稳定**，Carpet 假人经常停在「已登录但没进游戏」。
+> 因此**运行告警的端到端触发**、**七类增强指标的本轮采集**、**watch/unwatch 的完整交互**
+> 没有在真实服务端上跑出来。已用对照实验逐条排除了本 Mod 的 Mixin、会话改动与 schema 迁移，
+> 详见 [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) 第 7 节。
 
 - 原版客户端侧的完整交互（登录、侧栏渲染、按钮点击、分页跳转、分享预览）。
 - 真人玩家的登录／下线与 Shadow 切换：Carpet 1.4.194 禁止给假人创建 Shadow，因此**无法用假人复现**。

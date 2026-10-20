@@ -96,7 +96,10 @@ public final class Database implements AutoCloseable {
             closeQuietly(connection);
             throw new DatabaseUnavailableException("统计数据库迁移失败，原库未被修改: " + databaseFile, e);
         }
-        return new Database(dataDirectory, databaseFile, connection, version);
+        // The game thread and the background thread share this database, so the connection is
+        // wrapped: only one thread may use it at a time, and a transaction is never interleaved
+        // with another thread's work.
+        return new Database(dataDirectory, databaseFile, SynchronizedConnection.wrap(connection), version);
     }
 
     /**

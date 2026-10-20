@@ -1,8 +1,8 @@
-# Themis Stats 0.1.0 (P0)
+# Themis Stats 0.1.0（P0 + P1 + P2）
 
 面向 **Carpet 生电服** 的玩家统计、排行榜与假人运行观察附属。
 
-服务端安装，**原版客户端无需安装任何东西**即可使用 P0 全部功能。
+服务端安装，**原版客户端无需安装任何东西**即可使用全部已实现的功能。
 
 - Mod ID：`themisstats`　｜　Java 包名：`dev.themisstats`
 - 根命令：`/themisstats`（可选别名 `/tstats`，被占用时不注册）
@@ -35,7 +35,7 @@
 
 ```
 [Themis Stats] v0.1.0 initialised, registered as a Carpet extension
-[ThemisStats] registered the themisStats rule category (15 rules) in the /carpet manager
+[ThemisStats] registered the themisStats rule category (18 rules) in the /carpet manager
 [ThemisStats] statistics module ready, database <世界>/themisstats/stats.db
 ```
 
@@ -55,7 +55,7 @@
 - 会话结束情况区分：正常下线、死亡后离线、管理员移除、正常停服、异常中断、原因未知、身份切换。
   **判断不了原因时写「原因未知」，不会猜成管理员操作。**
 
-### 八类指标
+### 十五类指标（P0 八类 ＋ P1 七类增强）
 
 | 指标 | 口径 |
 | --- | --- |
@@ -64,27 +64,89 @@
 | `placement` | 一次成功的**固体方块放置操作**计 1（门／床一次算 1） |
 | `kills` | 服务端**最终归属**的击杀事件，每个目标死亡只记一次 |
 | `deaths` | 对象**真正发生的死亡** |
-| `villager_trades` | 一次**成功执行**的交易计 1（拿到多个物品仍是 1 次） |
-| `fishing` | 一次**成功钓获**计 1（空甩竿、空收竿不计） |
+| `villager_trades` | 一次**成功执行**的交易计 1 |
+| `fishing` | 一次**成功钓获**计 1 |
 | `elytra_distance` | 鞘翅滑翔时的连续有效位移 |
+| `damage_dealt` | **血量实际减少量**（护甲、抵抗、吸收生命与图腾的结算已算在内） |
+| `damage_taken` | **血量实际减少量**，过量伤害按实际扣血计 |
+| `movement` | 仅 `MoverType.SELF` 的位移，分类为走／游／骑乘／飞行 |
+| `crafted` | 从合成结果格**取出**一次计 1 |
+| `picked_up` | 背包在拾取**之前**比拾取**之后**多出的件数 |
+| `dropped` | 主动丢弃一次计 1 |
+| `piglin_barters` | 猪灵**收到**物品并完成一次交换计 1 |
 
 明确的边界：
 
 - 取消、拒绝、未真正移除的破坏都不计；命令、爆炸、活塞推动、自然生长不归给玩家。
 - 放水、倒岩浆、活塞移动不进入固体放置榜。
 - 玩家击杀玩家单独分类为 `minecraft:player`。
-- 生存＋冒险是行为指标的公共榜默认范围；创造与旁观的数据照样采集保存，只是默认不公开。
+- 生存＋冒险是行为指标的公共榜默认范围（由 `themisStatsPublicModes` 决定）；
+  创造与旁观的数据照样采集保存，只是默认不公开。
 - `online` **不**按模式过滤，它统计的是各身份实际被采集的在线时长。
 
 ### 排行榜
 
 - 三类身份各自独立榜，默认不混排。
 - **竞争排名**（1、2、2、4），零值不占榜但资料页仍显示零。
-- 在线与离线对象共同参与累计。
 - 公开累计 = 符合筛选的采集累计 **+** 该明细范围的管理员调整；榜单、全服总计、与前一名的差距、
   导出全部用这一条公式，**口径一致**。
 - 管理员调整落在具体明细范围（对象 ＋ 身份 ＋ 指标 ＋ 分类 ＋ 维度 ＋ 模式），
   所以细分类与总计永远不会互相矛盾；原始会话值与调整分开保存。
+- **显式导入的历史数据不参与这条公式**，它带自己的来源标记，与采集的数据分属不同的行。
+
+### 细分榜与诊断榜
+
+- `/themisstats fine <指标> <分类> [身份] [页码]`：按方块／实体／移动方式拆分后的累计榜。
+- `/themisstats admin board <指标> <身份> <模式> [分类] [维度] [页码]`：管理员可以指定任意
+  模式、分类与维度，不受公共模式范围限制。
+
+### 运行告警（P1）
+
+五类提醒：低生命值、工具低耐久、意外离线、指定统计停滞、保存异常。
+
+- 总开关 `themisStatsBotAlerts` **默认关闭**；订阅可以先存好，打开后立即生效。
+- 只发给**订阅者**，且订阅者本人也要有查看该对象运行细节的权限。
+- 同一对象同一原因冷却 10 分钟；条件恢复后**只发一次**恢复通知；新上线对象有 60 秒宽限期。
+- 「指定统计停滞」**只说明观察期内无增长，不会断言机器故障**；采集暂停时判定中止并重建窗口。
+- 告警**不会**清空背包、补工具、传送假人或改动它的动作。
+
+### 会话对比（P1）
+
+`/themisstats compare <对象> <身份> [指标]` 给出最近两次会话的时长差、指标差与**每真实分钟速率**，
+并说明低 TPS 会让每分钟的实际次数变少、暂停采集的区间不计入分母。
+
+### 显式数据导入（P2）
+
+- 导入**永远是显式的**：没有管理员指向一个文件，就不会有任何数据进入数据库。
+- CSV 列：`uuid,name,identity,metric,category,dimension,gameMode,value`
+  （`#` 开头是注释行，空行忽略；读不懂的行会被跳过并在结果里逐条报告，不会中断整次导入）。
+- 导入的行带 `imported` 来源标记，**公共榜、细分榜与导出都不会因为一次导入而变大**。
+- 导入代表的是**管理员写进文件里的内容**，不是过去真人与假人行为的还原。
+
+### 查询接口（P2）
+
+Java 接口 `dev.themisstats.api.ThemisStatsApi`（`top` / `valueOf` / `breakdown` / `onlineCounts`）
+与三个 Scarpet 函数：
+
+```
+themis_stats('mining', 'bot')                -> 整个身份组的公开累计
+themis_stats_of('mining', 'bot', 'bot_a')    -> 单个对象的公开累计
+themis_stats_top('mining', 'bot', 1)         -> 第一页的 [名字, 数值] 列表
+```
+
+它们与命令使用**同一条**公开公式，脚本看到的数字与聊天命令看到的数字**永远一致**。
+
+### 权限节点（P2）
+
+`themisstats.query` / `view_details` / `sidebar` / `watch` / `export` / `manage`。
+没有权限插件时由 OP 等级决定（管理员全部有，普通玩家只有 `query` 与 `sidebar`）；
+装了权限插件可以用 `PermissionNodes.setProvider(...)` 接入自己的实现。
+
+### 工程计量（P2）
+
+`/themisstats admin project <对象> <工程>` 把对象归入工程，
+`/themisstats project <工程> [指标] [页码]` 列出成员与工程合计，
+并明确提示「工程累计只统计已采集的数据，不代表机器的实际产量」。
 
 ### 个人侧边栏
 
@@ -101,16 +163,16 @@
 - 档案：身份、负责人、用途（`loader`/`mining`/`combat`/`use`/`custom`）、标签、备注、统计资格、最近运行。
 - 观察：在线状态、维度坐标、生命、饥饿、主副手、工具耐久、动作计划、最近成功行为与本次累计。
 - 默认 **2 秒采样**，只读有限字段，**不扫描周边农场、不加载区块**。
-- 动作计划通过针对 Carpet `EntityPlayerActionPack` 的 Mixin 访问器**只读**读取。
 - **在线 / 动作计划 / 观察到的行为是三件不同的事**：配置了攻击不代表发生了击杀，
   静止挂机的假人也不会被判定为故障，更不会据此宣称农场在正常生产。
-- 离线对象只显示**最后已知**状态并明确标注。
 
 ### 数据与可靠性
 
 - 目标每 5 秒批量提交；账号离线与正常停服时请求结算。
 - 每批有稳定身份，重试**不重复加分**；累计、会话汇总、批次回执在同一事务内写入。
 - 队列有界；满时进入**可见的降级状态**并记录缺口，游戏线程**不为落盘等待**。
+- **整库访问被一把可重入锁串行化**：SQLite 的连接不是线程安全的，
+  游戏线程与后台线程共用时，读会看到未提交的数据，写会串进对方的事务。
 - 异常退出只恢复已提交数据，遗留会话标为「异常中断」，**停机时间不算在线**。
 - 备份用 `VACUUM INTO` 取运行中的一致快照（不忽略 WAL）。
   备份**只含本 Mod 数据**，不等于世界备份。
@@ -118,7 +180,7 @@
 
 ---
 
-## Carpet 规则（15 条）
+## Carpet 规则（18 条）
 
 全部注册在 `/carpet` **主**规则管理器下，分类 `themisStats`。
 
@@ -139,6 +201,9 @@
 | `themisStatsBotMonitor` | 布尔 | `true` | 是否采样假人运行状态 |
 | `themisStatsBotSampleSeconds` | 整数 | `2` | 假人状态采样间隔，范围 1～30 |
 | `themisStatsBotLocations` | 字符串 | `owners` | 精确位置／装备可见范围（`ops`/`owners`/`all`） |
+| `themisStatsBotAlerts` | 布尔 | `false` | 运行告警总开关（关闭时订阅仍可保存） |
+| `themisStatsPublicModes` | 字符串 | `survival,adventure` | 进入公共榜的游戏模式 |
+| `themisStatsStallPurposes` | 字符串 | `mining,combat,use,custom` | 允许触发「指定统计停滞」的用途 |
 
 **非法值一律拒绝、旧值保留。** 持久化用 Carpet 自己的 `setDefault` / `removeDefault`
 （写入世界根目录的 `carpet.conf`）；`removeDefault` 会把运行值重置为内置默认值。
@@ -166,6 +231,11 @@
 | `/themisstats top <指标> [身份] [页码]` | 公开累计榜 |
 | `/themisstats rank <指标> [身份]` | 自己的名次、差距与相邻名次 |
 | `/themisstats detail <对象> <身份> <指标>` | 对象的类型细分累计 |
+| `/themisstats fine <指标> <分类> [身份] [页码]` | 细分榜 |
+| `/themisstats project <工程> [指标] [页码]` | 工程计量 |
+| `/themisstats watch <对象> <身份> [提醒] [指标]` | 订阅运行告警 |
+| `/themisstats unwatch <对象> <身份>` | 取消订阅 |
+| `/themisstats compare <对象> <身份> [指标]` | 最近两次会话对比 |
 | `/themisstats board off` | 关闭个人侧栏 |
 | `/themisstats board fixed <指标> [身份]` | 固定个人榜单 |
 | `/themisstats board carousel [身份]` | 开启个人轮播 |
@@ -187,9 +257,13 @@
 | `/themisstats admin bot role <对象> <用途>` | 设置用途（不改 Carpet 实际动作） |
 | `/themisstats admin bot note <对象> <备注>` | 设置备注 |
 | `/themisstats admin bot tag <对象> <add\|remove> <标签>` | 增删标签 |
+| `/themisstats admin project <对象> <工程>` | 把对象归入工程 |
 | `/themisstats admin exclude <对象> <身份> <原因>` | 排除公开榜（不删数据） |
 | `/themisstats admin include <对象> <身份> <原因>` | 撤销排除 |
 | `/themisstats admin adjust <对象> <身份> <指标> <+\|-\|=> <数值> <原因>` | 数据修正（**先预览，再确认**） |
+| `/themisstats admin board <指标> <身份> <模式> [分类] [维度] [页码]` | 诊断榜（可指定模式／分类／维度） |
+| `/themisstats admin import <文件>` | 显式导入 CSV |
+| `/themisstats admin imported <指标> <身份>` | 查看导入进来的历史数据 |
 | `/themisstats admin audit [页码]` | 管理操作日志 |
 | `/themisstats admin flush` | 请求提交待保存数据 |
 | `/themisstats admin export <指标> <身份> <csv\|json>` | 导出统计 |
@@ -211,6 +285,7 @@
 | 调整自己的侧栏 | 依 `themisStatsAllowPlayerChoice` | 依规则 | 允许 | — |
 | 查假人公开汇总 | 依对应榜单规则 | 同普通玩家 | 允许 | 允许 |
 | 查假人精确位置、装备、详细会话 | 默认不允许 | 仅已绑定对象 | 允许 | 允许 |
+| 订阅运行告警 | 依 `themisstats.watch` | 依节点 | 允许 | 不适用 |
 | 数据修正、排除、导出、备份 | 不允许 | 不允许 | 允许 | 允许 |
 
 **假人负责人**是管理员建立的关联记录，不由假人名称或聊天声明产生，也不附带 Carpet 的 `/player` 等操作权限。
@@ -223,33 +298,31 @@
 
 | 项目 | 结果 |
 | --- | --- |
-| 单元测试 | **38 个全通过**（真实 SQLite + 真实 schema，不是 mock） |
-| 服务端实测 | 挖掘、放置、击杀（含 `minecraft:player` 分类）、死亡、统计在线时长 |
-| 规则与命令 | `/carpet list themisStats` 输出 15 条带中文说明的规则；29 条命令逐条跑通 |
-| 存储 | schema 1 → 2 → 3 迁移实测，每次迁移前自动备份 |
+| 单元测试 | **109 个全通过**（真实 SQLite + 真实 schema，不是 mock） |
+| 服务端实测 | 挖掘、放置、击杀（含 `minecraft:player` 分类）、死亡、统计在线时长、会话对比 |
+| 规则与命令 | `/carpet list themisStats` 输出 **18** 条带中文说明的规则；命令逐条跑通 |
+| 存储 | schema 1 → 2 → 3 → **4 → 5 → 6** 迁移实测，每次迁移前自动备份 |
 | 损坏注入 | 数据库被写坏后统计模块停用并给出诊断，**服务端照常启动，原库未被覆盖** |
 | 写入幂等 | 同一批次重放不重复加分；故障时进入可见降级状态 |
+| 线程安全 | 游戏线程与后台线程共用一个 SQLite 连接 → 已用可重入锁串行化（事务期间不释放） |
 | 侧栏 64 位 | 排序分与业务值解耦、90 亿完整显示（自动用例） |
 | 性能对照 | 小规模 A/B：启用与停用的 CPU 时间差异落在运行间噪声内，两边**掉帧都是 0 条** |
 
 ### 明确未执行的部分
 
-这些**没有**在本次发布中执行，**不应**当作已通过（详见 `docs/ACCEPTANCE.md`）：
+这些**没有**在本次发布中执行，**不应**当作已通过（详见 `docs/ACCEPTANCE.md` 第 7 节）：
 
+- **本机到 Mojang 会话服务器的网络不稳定**，Carpet 假人经常停在「已登录但没进游戏」，
+  因此**运行告警的端到端触发**、**七类增强指标的本轮采集**、**watch/unwatch 的完整交互**
+  没有在真实服务端上跑出来。已用对照实验逐条排除了本 Mod 的 Mixin、会话改动与 schema 迁移。
 - 原版客户端连接后的完整操作：侧栏实际渲染、聊天菜单按钮、分享预览。
-- 真人玩家登录／下线、**Shadow 切换（A08）**、改名。
-- **钓获的端到端路径**（咬钩窗口只有约 1 tick，自动假人无法稳定命中；钩子本身按 1.21.11 源码核对过）。
+- 真人玩家登录／下线、**Shadow 切换**、改名。
+- **钓获的端到端路径**（咬钩窗口只有约 1 tick，自动假人无法稳定命中）。
 - 鞘翅飞行的**实飞**距离累计（测量逻辑已由 6 个自动用例覆盖）。
-- 两个真实客户端同时看不同榜单（A29 客户端侧）。
-- 20 真人／100 假人的负载基准（本环境达不到：每个新假人需等约 25 秒的档案解析）。
+- 两个真实客户端同时看不同榜单。
+- 20 真人／100 假人的负载基准（本环境达不到）。
 - 负责人转移后「原负责人被撤销详细访问」那一步（需要两个能发命令的真实玩家）。
-
-### P1 / P2 未实现
-
-本次**没有**注册任何 P1 的假命令或无效开关：运行告警订阅、`themisStatsBotAlerts`、
-`watch` / `unwatch` / `compare`、细分方块／实体排行榜、维度与模式筛选的公开榜，
-以及 `damage_dealt` / `damage_taken` / `movement` / `crafted` / `picked_up` / `dropped` /
-`piglin_barters` 七类增强指标。
+- 权限插件接入后的节点行为。
 
 本 Mod 不会自动禁用 `/player`，不会批量修改 Carpet 的其他规则，
 不导入原版统计文件，也不把原版累计总数当作已分账的数据。
@@ -261,13 +334,14 @@
 ```bash
 # 需要 JDK 21
 ./gradlew build      # 产物：build/libs/themis-stats-0.1.0.jar
-./gradlew test       # 38 个单元测试
+./gradlew test       # 109 个单元测试
 ./gradlew runServer  # 启动隔离的测试服务端
 ```
 
 Windows 下用 `gradlew.bat`。发布包**已内嵌** SQLite 驱动，部署时不需要另外安装依赖。
 
-验收脚本在 `tools/`：`run-server-test4.ps1`（完整场景）、`run-kill-test.ps1`（击杀归属）、
+验收脚本在 `tools/`：`run-server-test4.ps1`（完整场景）、`run-p1p2-test.ps1`（P1/P2 场景）、
+`run-alerts-test.ps1`（告警定向场景）、`run-kill-test.ps1`（击杀归属）、
 `run-corruption-test.ps1`（损坏注入）、`run-benchmark.ps1`（性能对照）、`inspect_db.py`（查库）、
 `start-server.ps1`（起一个带可见控制台的服务端）。
 
@@ -277,13 +351,10 @@ Windows 下用 `gradlew.bat`。发布包**已内嵌** SQLite 驱动，部署时�
 
 ```
 文件   themis-stats-0.1.0.jar
-大小   12,164,074 字节
-SHA-256  638ea2883623bddf3f3e414fcb8cf47bc38a7abe4f331ecdaca2ce2716e3e40a
-SHA-1    fe2c707f825feceef0fe43894831da4870efb8ca
 ```
 
 > JAR 打包会写入文件时间戳，因此**不是逐字节可复现**的：同样的源码重新构建会得到不同的 SHA-256
-> （内容一致）。需要可复现构建请自行加上 `preserveFileTimestamps=false` 与 `reproducibleFileOrder=true`。
+>（内容一致）。需要可复现构建请自行加上 `preserveFileTimestamps=false` 与 `reproducibleFileOrder=true`。
 
 ---
 

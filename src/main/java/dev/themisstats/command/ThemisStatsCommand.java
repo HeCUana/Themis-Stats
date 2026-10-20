@@ -148,17 +148,20 @@ public final class ThemisStatsCommand {
                                 .suggests((ctx, builder) -> SharedSuggestions.suggestMetrics(builder))
                                 .executes(this::explain)));
         // 工程累计：<工程名> [指标] [页码]
-        var projectName = Commands.argument("project", StringArgumentType.greedyString());
+        // The project name is a single word: a greedy string would swallow the metric behind it.
+        var projectName = Commands.argument("project", StringArgumentType.word());
         var projectMetric = Commands.argument("metric", StringArgumentType.word())
                 .suggests((ctx, builder) -> SharedSuggestions.suggestMetrics(builder));
         var projectPage = Commands.argument("page", IntegerArgumentType.integer(1));
         root.then(Commands.literal("project")
                 .then(projectName
-                        .executes(ctx -> project(ctx, Metric.MINING, 1))
+                        .executes(ctx -> project(ctx, null, 1))
                         .then(projectMetric
-                                .executes(ctx -> project(ctx, Metric.MINING, 1))
+                                .executes(ctx -> project(ctx,
+                                        StringArgumentType.getString(ctx, "metric"), 1))
                                 .then(projectPage
-                                        .executes(ctx -> project(ctx, Metric.MINING,
+                                        .executes(ctx -> project(ctx,
+                                                StringArgumentType.getString(ctx, "metric"),
                                                 IntegerArgumentType.getInteger(ctx, "page")))))));
 
         // 细分榜：<指标> <分类> [身份] [页码]
@@ -778,9 +781,19 @@ public final class ThemisStatsCommand {
     /**
      * The total of a project: the objects that belong to it and the sum of their values.
      */
-    private int project(CommandContext<CommandSourceStack> ctx, Metric metric, int page) {
+    private int project(CommandContext<CommandSourceStack> ctx, String metricId, int page) {
         CommandSourceStack source = ctx.getSource();
         String name = StringArgumentType.getString(ctx, "project");
+        Metric metric = Metric.MINING;
+        if (metricId != null) {
+            Metric parsed = Metric.byId(metricId);
+            if (parsed == null) {
+                source.sendFailure(CommandTexts.error("未知指标：" + metricId));
+                return 0;
+            }
+            metric = parsed;
+        }
+        final Metric scope = metric;
         if (!services().permissions().canQueryPublic(source)) {
             source.sendFailure(CommandTexts.error("公开查询当前已关闭。"));
             return 0;
@@ -788,17 +801,17 @@ public final class ThemisStatsCommand {
         asyncQuery(source, () -> services().permissions().canQueryPublic(source), () -> {
             List<Component> lines = new ArrayList<>();
             var members = services().accounts().projectMembers(name);
-            lines.add(CommandTexts.title("工程 · " + name + " · " + metric.displayName()));
+            lines.add(CommandTexts.title("工程 · " + name + " · " + scope.displayName()));
             if (members.isEmpty()) {
                 lines.add(CommandTexts.line("这个工程还没有成员。用 "
-                        + "/themisstats admin bot project <对象> " + name + " 归入。"));
+                        + "/themisstats admin project <对象> " + name + " 归入。"));
                 return lines;
             }
             long total = 0L;
             List<String> rows = new ArrayList<>();
             for (var member : members) {
                 long value = services().stats().valueOf(member.uuid(),
-                        StatsRepository.Scope.of(metric, member.identity(),
+                        StatsRepository.Scope.of(scope, member.identity(),
                                 services().rules().publicModes()));
                 total += value;
                 rows.add(member.uuid() + "|" + member.identity().id() + "|" + value);
@@ -810,9 +823,9 @@ public final class ThemisStatsCommand {
                 }
                 var account = services().accounts().accountByUuid(java.util.UUID.fromString(parts[0]));
                 lines.add(CommandTexts.value(account == null ? parts[0] : account.currentName(),
-                        CommandTexts.format(metric, Long.parseLong(parts[2]))));
+                        CommandTexts.format(scope, Long.parseLong(parts[2]))));
             }
-            lines.add(CommandTexts.value("工程合计", CommandTexts.format(metric, total)));
+            lines.add(CommandTexts.value("工程合计", CommandTexts.format(scope, total)));
             lines.add(CommandTexts.hint("共 " + members.size() + " 个成员；工程累计只统计已采集的数据，"
                     + "不代表机器的实际产量。"));
             return lines;
