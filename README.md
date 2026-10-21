@@ -16,21 +16,24 @@
 
 ## 1. 适配与验证过的版本
 
-| 组件 | 使用的版本 | 说明 |
-| --- | --- | --- |
-| Minecraft | 1.21.11 | 首发基线 |
-| Java | 21 | 编译与运行均使用 Java 21 |
-| Fabric Loader | 0.18.2+ | 开发与测试使用 0.19.5 |
-| Fabric API | 0.141.6+1.21.11 | 提供命令注册与重生事件 |
-| Carpet | 1.4.194 | **强依赖**；1.4.194 是已核对的源码基线 |
-| Loom / Gradle | 1.13.6 / 9.1.0 | 构建工具链 |
-| 映射 | Mojang 官方映射 | 与 Carpet 1.4.194 保持一致 |
+本仓库用**分支**区分 Minecraft 大版本：每个分支对应一套互不兼容的构建工具链。
 
-> 映射说明：本项目刻意使用 **Mojang 官方映射**，因为 Carpet 1.4.194 本身也是用官方映射构建的。
+| 分支 | Minecraft | Java | Fabric Loader | Fabric API | Carpet | Loom / Gradle | 产物 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `1.21.11` | 1.21.11 | 21 | 0.18.2+ | 0.141.6+1.21.11 | 1.4.194 | 1.13.6 / 9.1.0 | `themis-stats-0.1.0.jar` |
+| **`26.3`** | **26.3（正式版）** | **25** | 0.19.5 | 0.164.0+26.3 | 26.3 | 1.17.21 / 9.5.1 | `themis-stats-0.2.0+mc26.3.jar` |
+
+> **26.1 起 Minecraft 不再混淆**，Fabric 换成了不重映射的新版 Loom：不再需要 mappings，
+> `remapJar` 变成 `jar`，`modImplementation` 变成 `implementation`，并且要求 Java 25。
+> 本项目本来就用 **Mojang 官方映射**，所以 26.3 分支的**业务源码一行未改**——
+> 详见 [`docs/upgrade/26.3/`](docs/upgrade/26.3/)。
+
+> 映射说明：本项目刻意使用 **Mojang 官方映射**，因为 Carpet 本身也是用官方映射构建的。
 > 保持同一命名空间，才能保证 `carpet.patches.EntityPlayerMPFake`、`carpet.helpers.EntityPlayerActionPack`、
 > `carpet.api.settings.*` 等接口解析到的成员与实际核对的源码完全一致。
 
 未在上面列出的组合**没有经过实测**，请勿假定兼容。缺少 Carpet 时，Fabric Loader 会直接拒绝加载本 Mod。
+
 
 ---
 
@@ -470,13 +473,20 @@ themis_stats_top('mining', 'bot', 1)         -> 第一页的 [名字, 数值] �
 ## 17. 从源码构建与验证
 
 ```bash
-# 需要 JDK 21
+# 1.21.11 分支：需要 JDK 21
 ./gradlew build          # 产物：build/libs/themis-stats-0.1.0.jar
 ./gradlew test           # 单元测试：公开值公式、竞争排名、排除与模式过滤、导入、告警存储、迁移
 ./gradlew runServer      # 启动一个隔离的测试服务端
+
+# 26.3 分支：需要 JDK 25
+./gradlew build          # 产物：build/libs/themis-stats-0.2.0+mc26.3.jar
 ```
 
 Windows 下使用 `gradlew.bat`。构建产物包含内置的 SQLite 驱动，发布包**不需要**另外安装依赖。
+
+> 26.3 分支的构建使用**不重映射**的新版 Loom：`build` 任务直接产出最终 jar，
+> 没有 `remapJar`，也不需要 mappings 依赖。
+
 
 ### 自动化验收
 

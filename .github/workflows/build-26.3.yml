@@ -1,0 +1,54 @@
+name: build (Minecraft 26.3)
+
+# Minecraft 26.1 起游戏不再混淆，工具链换成不重映射的新版 Loom，
+# 并且要求 Java 25。CI 必须跟着换，否则抓到的产物是旧目标的残留。
+on:
+  push:
+    branches: [ "26.3" ]
+  pull_request:
+    branches: [ "26.3" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Java 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: gradle
+
+      - name: 设定 Gradle JVM 参数
+        run: echo "ORG_GRADLE_PROJECT_org.gradle.jvmargs=-Xmx3G" >> "$GITHUB_ENV"
+
+      - name: 构建（编译 + 单元测试 + 产物）
+        run: ./gradlew build --no-daemon --console=plain
+
+      - name: 上传发布产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: themis-stats-mc26.3
+          # 只抓真正的发布 jar：新版 Loom 下没有 remapJar，
+          # 产物就是 build/libs/themis-stats-<版本>+mc26.3.jar；
+          # 排除 sources 与旧目标残留。
+          path: |
+            build/libs/themis-stats-*.jar
+            !build/libs/*-sources.jar
+            !build/libs/*-dev.jar
+          if-no-files-found: error
+
+      - name: 打印产物校验值
+        run: |
+          cd build/libs
+          for f in themis-stats-*.jar; do
+            case "$f" in *-sources.jar) continue;; esac
+            echo "== $f =="
+            sha256sum "$f"
+            unzip -p "$f" fabric.mod.json
+            echo
+          done

@@ -26,7 +26,13 @@ logs/
 server/
 # Throwaway copy of the test server used by the save failure test
 server-sf-test/
+# Minecraft 26.3 test server and the data-compatibility copy
+server-263/
+server-263-mig/
 *.pid
+
+# Local toolchains (JDK 25 used for the Minecraft 26.3 build)
+.toolchains/
 
 # Local tool output
 tools/*.log

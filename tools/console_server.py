@@ -34,15 +34,46 @@ LAUNCHER = os.path.join(SERVER, "fabric-server-mc.1.21.11-loader.0.19.5-launcher
 JAVA = r"C:\Program Files\Zulu\zulu-21\bin\java.exe"
 LOG = os.path.join(SERVER, "logs", "latest.log")
 
+# 26.3 需要 Java 25；仓库内自带的工具链优先，其次是 JAVA_HOME。
+JAVA25 = os.path.join(ROOT, ".toolchains", "zulu25",
+                      "zulu25.36.205-ca-jdk25.0.4.1-win_x64", "bin", "java.exe")
+
+
+def java_for(server_dir: str) -> str:
+    """选一个能跑该服务端目录的 Java。
+
+    26.3 的服务端要求 Java 25；1.21.11 那个目录用 Java 21 即可。
+    """
+    name = os.path.basename(os.path.normpath(server_dir))
+    if "263" in name.replace("-", "").replace("_", "") and os.path.isfile(JAVA25):
+        return JAVA25
+    if os.environ.get("JAVA_HOME"):
+        candidate = os.path.join(os.environ["JAVA_HOME"], "bin", "java.exe")
+        if os.path.isfile(candidate):
+            return candidate
+    return JAVA
+
+
+def launcher_for(server_dir: str) -> str:
+    """在服务端目录里找出 Fabric 启动器（不写死文件名，换 MC 版本也能用）。"""
+    preferred = os.path.join(server_dir, "fabric-server-mc.1.21.11-loader.0.19.5-launcher.1.1.2.jar")
+    if os.path.isfile(preferred):
+        return preferred
+    for name in sorted(os.listdir(server_dir)):
+        if name.endswith(".jar") and "launcher" in name:
+            return os.path.join(server_dir, name)
+    raise RuntimeError("服务端目录里没有 Fabric 启动器：%s" % server_dir)
+
 
 class ConsoleServer:
     """Starts the test server with a pipe on its standard input."""
 
-    def __init__(self, root: str = ROOT) -> None:
+    def __init__(self, root: str = ROOT, server_dir: str | None = None) -> None:
         self.root = root
-        self.server = os.path.join(root, "server")
-        self.launcher = os.path.join(self.server,
-                                     "fabric-server-mc.1.21.11-loader.0.19.5-launcher.1.1.2.jar")
+        self.server = server_dir or os.environ.get("THEMIS_STATS_SERVER_DIR") or os.path.join(root, "server")
+        self.server = os.path.abspath(self.server)
+        os.makedirs(os.path.join(self.server, "logs"), exist_ok=True)
+        self.launcher = launcher_for(self.server)
         self.log = os.path.join(self.server, "logs", "latest.log")
         self.proc: subprocess.Popen | None = None
         self._offset = 0
@@ -53,8 +84,16 @@ class ConsoleServer:
         self.stop_server_only()
         out = open(os.path.join(self.server, "logs", "console-out.log"), "wb")
         err = open(os.path.join(self.server, "logs", "console-err.log"), "wb")
+        # 启动器默认要去网上抓 loader 与游戏 jar；本机网络对大文件不稳，
+        # 所以把本地已有的 loader jar 直接指给它。
+        extra = []
+        for name in sorted(os.listdir(self.server)):
+            if name.startswith("fabric-loader-server-") and name.endswith(".jar"):
+                extra.append("-Dfabric.customLoaderPath=" + os.path.join(self.server, name))
+                break
         self.proc = subprocess.Popen(
-            [JAVA, "-Xms1G", "-Xmx2G", "-Djava.net.preferIPv4Stack=true", "-jar", self.launcher],
+            [java_for(self.server), "-Xms1G", "-Xmx2G", "-Djava.net.preferIPv4Stack=true"]
+            + extra + ["-jar", self.launcher],
             cwd=self.server, stdin=subprocess.PIPE, stdout=out, stderr=err)
         # The server rotates latest.log when it starts, so the new file starts at 0 again.
         time.sleep(5)

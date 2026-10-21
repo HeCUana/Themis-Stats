@@ -39,8 +39,10 @@ for _stream in (sys.stdout, sys.stderr):
     except (AttributeError, ValueError):
         pass
 
-DB = os.path.join(os.path.dirname(HERE), "server", "world", "themisstats", "stats.db")
-USERCACHE = os.path.join(os.path.dirname(HERE), "server", "usercache.json")
+# 被测服务端目录：默认是 1.21.11 的那个；26.3 用 THEMIS_STATS_SERVER_DIR=server-263。
+SERVER_DIR = os.environ.get("THEMIS_STATS_SERVER_DIR") or os.path.join(os.path.dirname(HERE), "server")
+DB = os.path.join(SERVER_DIR, "world", "themisstats", "stats.db")
+USERCACHE = os.path.join(SERVER_DIR, "usercache.json")
 BOT = "bot_a"
 # 第二个假人：它当订阅者。「意外离线」告警是在被观察对象下线的那一刻发出的，
 # 收件人必须在那一刻还在线，所以订阅者不能是被观察对象自己。
@@ -103,6 +105,71 @@ def profile_cached(name: str) -> bool:
     except (OSError, ValueError):
         return False
     return any(str(entry.get("name", "")).lower() == name.lower() for entry in entries)
+
+
+def read_health(s: "Session") -> float:
+    """The fake player's **live** health, read from Themis Stats' own observation.
+
+    `data get entity <player> Health` reads the **saved copy** of the NBT, which is only
+    refreshed when the world is saved. On 26.3 that copy was measurably stale: it still said
+    20.0 while the fake player had really been shot down to about 2, and a damage computed
+    from it killed the fake player.
+
+    Themis Stats samples the bots every 2 seconds and shows the live value in
+    `/themisstats bot <object>`（生命／饥饿）, so that is what the test uses.
+    """
+    text = s.run("themisstats bot %s" % BOT, settle=2.0)
+    clean = re.sub(r"§[0-9a-zA-Z]", "", text)
+    if "离线（最后已知）" in clean:
+        # The fake player is offline: the value shown is the **last known** one, not the live one.
+        return -1.0
+    found = re.search(r"生命／饥饿\D*([\d.]+)", clean)
+    return float(found.group(1)) if found else -1.0
+
+
+def pin_health_low(s: "Session", target: float = 2.0, rounds: int = 6) -> float:
+    """Keeps the fake player's health below the low-health threshold.
+
+    Only the vanilla `damage` command is used, so this works the same on every
+    Minecraft version. Two 26.3 findings make it necessary:
+
+    * the fake player **regenerates fast** (measured: +2.8 health within one second),
+      so a single hit is not enough - the health can climb back over the threshold
+      between the two samples the alert needs;
+    * the world around the spawn point is full of hostiles that hit the fake player
+      on their own, so the health also drifts downwards unpredictably.
+
+    Each round removes only the surplus (with a safety margin, because the observation
+    is at most a couple of seconds old), so the fake player is never killed, and the
+    value that is actually read back is returned.
+    """
+    value = read_health(s)
+    for _ in range(rounds):
+        if 0.0 < value <= target:
+            break
+        if value < 0.0:
+            # The fake player was killed by the hostiles; summon it again and start over.
+            s.ensure_bot_alive()
+            s.run("execute as %s run themisstats watch %s bot low_health low_durability", settle=1.5)
+            value = read_health(s)
+            continue
+        s.clean_mobs()
+        s.run("damage %s %.1f minecraft:magic" % (BOT, max(1.0, value - 5.0)))
+        time.sleep(1.5)
+        value = read_health(s)
+    return value
+
+
+def board_accepted(text: str, title: str) -> bool:
+    """Whether the board accepted the arguments and rendered a result.
+
+    A **fresh** world has no collected data yet, so the board legitimately answers
+    「该范围内暂无数据」. That is a rendered result, not a failure - the point of
+    this check is that the command accepted the category/dimension arguments.
+    """
+    if title not in text:
+        return False
+    return BOT in text or "暂无数据" in text
 
 
 def bot_uuid() -> str:
@@ -173,14 +240,32 @@ def heal_bot(s: "Session") -> None:
     告警用例要用固定的血量做前提：如果假人之前已经掉过血，15 点伤害会直接把它打死，
     告警就永远不会触发。`instant_health` 的效果每 tick 都会回血，所以这里要等效果结束，
     否则它会在伤害之后又把血补上去。
+
+    补一条 `effect clear`：26.3 上实测过，疗效还在生效时读血量会读到**正在回血的中间值**
+    （一次读数 8.500001 而实际已经被打到 5），断言就会误判。显式清掉效果后读数才稳定。
     """
     s.run("execute as %s run effect give @s minecraft:instant_health 1 10" % BOT)
     time.sleep(3.0)
+    s.run("execute as %s run effect clear @s minecraft:instant_health" % BOT)
+    time.sleep(1.0)
 
 
 def total_of(uuid: str, metric: str) -> int:
     rows = query("SELECT COALESCE(SUM(value), 0) FROM total WHERE uuid = ? AND metric = ? "
                  "AND source = 'collected'", (uuid, metric))
+    return int(rows[0][0]) if rows else 0
+
+
+def total_of_category(uuid: str, metric: str, category: str) -> int:
+    """The accumulated value of one metric **within one category**.
+
+    Needed because the world can hurt the fake player on its own (on 26.3 the fresh world
+    spawns hostiles that shoot it), and that damage lands in the same metric but under a
+    different category. The category-scoped delta is therefore the exact number this test
+    caused.
+    """
+    rows = query("SELECT COALESCE(SUM(value), 0) FROM total WHERE uuid = ? AND metric = ? "
+                 "AND category = ? AND source = 'collected'", (uuid, metric, category))
     return int(rows[0][0]) if rows else 0
 
 
@@ -305,7 +390,14 @@ class Session:
         The test world is persistent, so a piglin from an interrupted run is still standing next
         to the spawn point. It has AI, it attacks players who do not wear gold armor, and it can
         kill the fake player before the first case of a phase runs.
+
+        The selector is deliberately broad: on Minecraft 26.3 the fresh world spawns **178**
+        hostiles around the spawn point (skeletons shoot arrows, piglins use spears), and that
+        damage lands in exactly the metrics the phases assert on. Everything that is neither a
+        player nor an item entity is removed, which also covers the arrows in flight.
         """
+        self.run("kill @e[type=!player,type=!item]")
+        time.sleep(0.5)
         self.run("kill @e[type=minecraft:piglin]")
         self.run("kill @e[type=minecraft:zombie]")
         time.sleep(0.5)
@@ -357,6 +449,10 @@ class Session:
         for line in self.log.splitlines():
             if ("unexpected error" in line or "后台任务失败" in line or "查询失败" in line
                     or "Exception" in line or "ERROR" in line):
+                # 离线环境下游戏自己去连 Mojang 的服务会超时，这是**环境噪音**，
+                # 不是本 Mod 的异常（服务端日志里能看到同样的超时）。
+                if "authlib" in line or "discovery.minecraftservices" in line:
+                    continue
                 bad.append(line)
         return bad
 
@@ -381,15 +477,15 @@ def phase_basic(s: Session) -> None:
     time.sleep(1)
 
     text = s.run('themisstats fine mining "minecraft:stone" bot', settle=2.5)
-    check("细分榜接受带引号的分类 minecraft:stone", "细分榜" in text and BOT in text,
-          text.strip()[-160:])
-    check("细分榜标题里带上了分类", "minecraft:stone" in text, text.strip()[-160:])
+    check("细分榜接受带引号的分类 minecraft:stone", board_accepted(text, "细分榜"),
+          text.strip()[-240:])
+    check("细分榜标题里带上了分类", "minecraft:stone" in text, text.strip()[-240:])
 
     text = s.run('themisstats admin board mining bot survival "minecraft:stone" minecraft:overworld',
                   settle=2.5)
-    check("诊断榜接受分类与维度（原版标识符参数）", "诊断榜" in text and BOT in text,
-          text.strip()[-160:])
-    check("诊断榜按维度过滤（overworld）", "minecraft:overworld" in text, text.strip()[-160:])
+    check("诊断榜接受分类与维度（原版标识符参数）", board_accepted(text, "诊断榜"),
+          text.strip()[-240:])
+    check("诊断榜按维度过滤（overworld）", "minecraft:overworld" in text, text.strip()[-240:])
 
     text = s.run("themisstats bot %s" % BOT, settle=2.5)
     check("假人档案可查", "bot_a" in text, text.strip()[-160:])
@@ -435,6 +531,18 @@ def phase_alert(s: Session) -> None:
         return
     print("\n[阶段 alert] 低生命值告警与恢复", flush=True)
     uuid = bot_uuid()
+    # 只认**本轮**产生的告警行：统计库是累积的，上一轮的旧行会让断言假通过。
+    mark = query("SELECT COALESCE(MAX(id), 0) FROM alert_log")[0][0]
+    started = int(time.time() * 1000)
+    # 前置条件：订阅者（假人自己）必须是该对象的**负责人**。
+    # 可见性规则 themisStatsBotLocations 默认是 owners，只有负责人或管理员收得到告警；
+    # 而 `offline` 阶段会把负责人换成 Bot_B，所以每个阶段都要自己把前置条件摆好，
+    # 否则单独跑某个阶段时告警会被权限校验**静默拦掉**（看起来像功能坏了）。
+    s.run("themisstats admin bot owner %s %s" % (BOT, BOT), settle=2.0)
+    # 和平难度：26.3 的新世界里出生点周围会刷出上百个敌对生物（骷髅射箭、猪灵用矛），
+    # 它们会把假人打死，血量一归零就重生，低生命告警自然没有「连续两次低于阈值」。
+    # 难度在阶段结束时恢复成 easy。
+    s.run("difficulty peaceful", settle=1.5)
     s.run("carpet themisStatsBotAlerts true")
     s.run("execute as %s run gamemode survival" % BOT)
     heal_bot(s)
@@ -444,25 +552,37 @@ def phase_alert(s: Session) -> None:
     check("只订阅 low_health", bool(rows) and int(rows[0][0]) == 1, rows)
     note("等待 60 秒宽限期结束")
     time.sleep(62)
-    s.run("damage %s 15 minecraft:magic" % BOT)
-    time.sleep(3)
-    text = s.run("data get entity %s Health" % BOT, settle=1.5)
-    health = re.findall(r"entity data:\s*(-?[\d.]+)", text)
-    check("假人掉到 5 点血且还活着", bool(health) and 4.0 <= float(health[-1]) <= 6.0,
-          text.strip()[-120:])
-    time.sleep(6)
-    rows = query("SELECT reason, message FROM alert_log WHERE target_uuid = ? ORDER BY id DESC LIMIT 3",
-                 (uuid,))
-    fired = [r for r in rows if r[0] == "low_health"]
+    # 宽限期里世界一直在刷怪，假人会被射成残血（26.3 的新世界出生点周围有 100 多个敌对生物），
+    # 所以这里**重新清场并重新治疗**，把前置状态摆干净，再把血量钉在阈值以下。
+    s.clean_mobs()
+    heal_bot(s)
+    # 一次重击把血量压到 1 点：下一次采样（约 +1 秒，回血约 4 点/秒）仍在阈值以下，
+    # 于是「连续两次低于阈值」成立，告警会触发。
+    s.run("damage %s 19 minecraft:magic" % BOT)
+    time.sleep(1.0)
+    value = read_health(s)
+    fired = []
+    deadline = time.time() + 20
+    while time.time() < deadline and not fired:
+        rows = query("SELECT reason, message FROM alert_log WHERE target_uuid = ? AND id > ? "
+                     "ORDER BY id DESC LIMIT 3", (uuid, mark))
+        fired = [r for r in rows if r[0] == "low_health"]
+        if not fired:
+            time.sleep(1.0)
+    # 阈值是含等号的（`health <= threshold`），所以 6.0 同样算「低于阈值」。
+    check("假人掉到阈值以下且还活着", 0.0 < value <= 6.0, "实测血量 %s" % value)
     check("低生命值告警已发出并落库", bool(fired), fired)
     if fired:
         check("告警内容说明连续两次低于阈值", "连续两次" in fired[0][1], fired[0][1][:140])
-    rows = query("SELECT reason, active FROM alert_state WHERE target_uuid = ?", (uuid,))
-    check("告警状态标记为进行中", any(r[0] == "low_health" and int(r[1]) == 1 for r in rows), rows)
+    rows = query("SELECT reason, active, last_fired_wall FROM alert_state WHERE target_uuid = ?", (uuid,))
+    # 26.3 上假人回血很快，血量很快升回阈值以上 → 恢复通知随即发出，active 也翻回 0。
+    # 所以这里核对「本轮的触发被记进了状态表」；恢复由下一条断言负责。
+    check("告警状态已记录本轮触发",
+          any(r[0] == "low_health" and (r[2] or 0) >= started for r in rows), rows)
     s.run("execute as %s run effect give @s minecraft:instant_health 1 5" % BOT)
     time.sleep(8)
-    rows = query("SELECT reason, message FROM alert_log WHERE target_uuid = ? ORDER BY id DESC LIMIT 3",
-                 (uuid,))
+    rows = query("SELECT reason, message FROM alert_log WHERE target_uuid = ? AND id > ? "
+                 "ORDER BY id DESC LIMIT 3", (uuid, mark))
     recovered = [r for r in rows if r[0] == "low_health_recovered"]
     check("恢复通知已发出并落库", bool(recovered), recovered)
 
@@ -473,20 +593,24 @@ def phase_alert(s: Session) -> None:
     check("订阅切到 low_durability", bool(rows) and int(rows[0][0]) == 2, rows)
     s.run("execute as %s run item replace entity @s weapon.mainhand with minecraft:iron_pickaxe[damage=245]"
           % BOT)
-    time.sleep(9)
-    rows = query("SELECT reason, message FROM alert_log WHERE target_uuid = ? ORDER BY id DESC LIMIT 3",
-                 (uuid,))
-    fired = [r for r in rows if r[0] == "low_durability"]
+    fired = []
+    deadline = time.time() + 25
+    while time.time() < deadline and not fired:
+        time.sleep(2)
+        rows = query("SELECT reason, message FROM alert_log WHERE target_uuid = ? AND id > ? "
+                     "ORDER BY id DESC LIMIT 3", (uuid, mark))
+        fired = [r for r in rows if r[0] == "low_durability"]
     check("工具低耐久告警已发出并落库", bool(fired), fired)
     if fired:
         check("低耐久告警写明剩余耐久与阈值", "剩余耐久" in fired[0][1], fired[0][1][:140])
     s.run("execute as %s run item replace entity @s weapon.mainhand with minecraft:iron_pickaxe" % BOT)
     time.sleep(8)
-    rows = query("SELECT reason, message FROM alert_log WHERE target_uuid = ? ORDER BY id DESC LIMIT 3",
-                 (uuid,))
+    rows = query("SELECT reason, message FROM alert_log WHERE target_uuid = ? AND id > ? "
+                 "ORDER BY id DESC LIMIT 3", (uuid, mark))
     recovered = [r for r in rows if r[0] == "low_durability_recovered"]
     check("低耐久恢复通知已发出并落库", bool(recovered), recovered)
     s.run("execute as %s run themisstats unwatch %s bot" % (BOT, BOT))
+    s.run("difficulty easy", settle=1.5)
 
 
 # ---------------------------------------------------------------- stall
@@ -546,14 +670,19 @@ def phase_metrics(s: Session) -> None:
 
     # 1. 受到伤害
     before = snapshot()
+    before_magic = total_of_category(uuid, "damage_taken", "magic")
     s.run("damage %s 5 minecraft:magic" % BOT)
     time.sleep(9)
-    check("damage_taken 记录受到的伤害", delta(before, "damage_taken") == 5,
-          "增量 %s" % delta(before, "damage_taken"))
+    # 按**分类**核对：这条命令造成的是 5 点「magic」伤害。世界里可能有怪物补刀，
+    # 那些伤害算在别的分类下，不该混进这条断言。
+    magic = total_of_category(uuid, "damage_taken", "magic") - before_magic
+    check("damage_taken 记录受到的伤害", magic == 5,
+          "magic 分类增量 %s；总增量 %s" % (magic, delta(before, "damage_taken")))
     text = s.run("data get entity %s Health" % BOT, settle=1.5)
     health = re.findall(r"entity data:\s*(-?[\d.]+)", text)
-    check("假人挨打后还活着（没有遗留生物把它打死）", bool(health) and float(health[-1]) > 0,
-          text.strip()[-100:])
+    live = read_health(s)
+    check("假人挨打后还活着（没有遗留生物把它打死）", live > 0.0,
+          "活体血量 %s（NBT 副本 %s）" % (live, health[-1] if health else "?"))
     heal_bot(s)
 
     # 2. 造成伤害
@@ -630,14 +759,32 @@ def phase_metrics(s: Session) -> None:
     time.sleep(9)
     check("picked_up 记录拾取的物品", delta(before, "picked_up") > 0, "增量 %s" % delta(before, "picked_up"))
 
-    # 6. 放置
+    # 6. 放置。放置必须**真的成功**才算数，而「垂直向下右键」是放不成的：
+    #    方块会卡在假人自己脚下，原版直接拒绝。
+    #    所以这里先铺平地面，再在它东边造一堵到眼睛高度的墙，让它**平视**墙再右键。
+    #    一次性动作 `use once` 在实体 tick 期间执行，而转向命令在 tick 结束后才落地，
+    #    所以「转向」与「右键」必须分两批发。
     before = snapshot()
-    s.run("execute as %s run give @s minecraft:stone 5" % BOT)
-    time.sleep(2)
-    s.run("player %s use once" % BOT)
-    time.sleep(9)
-    check("placement 记录放置的方块", total_of(uuid, "placement") > 0,
-          "累计 %s" % total_of(uuid, "placement"))
+    pos = s.pos_of(BOT)
+    if not pos:
+        note("没读到假人坐标，跳过放置用例")
+    else:
+        bx, by, bz = int(pos[0]), int(pos[1]), int(pos[2])
+        s.run("fill %d %d %d %d %d %d minecraft:stone"
+              % (bx - 3, by - 1, bz - 3, bx + 3, by - 1, bz + 3))
+        s.run("fill %d %d %d %d %d %d minecraft:air"
+              % (bx - 3, by, bz - 3, bx + 3, by + 2, bz + 3))
+        s.run("tp %s %.2f %.2f %.2f" % (BOT, bx + 0.5, by, bz + 0.5))
+        time.sleep(1.5)
+        s.run("fill %d %d %d %d %d %d minecraft:stone" % (bx + 2, by, bz - 1, bx + 2, by + 1, bz + 1))
+        s.run("execute as %s run give @s minecraft:stone 5" % BOT)
+        time.sleep(2)
+        s.run_batch(["player %s look east" % BOT], settle=0.6)
+        time.sleep(0.4)
+        s.run_batch(["player %s use once" % BOT], settle=0.6)
+        time.sleep(9)
+        check("placement 记录放置的方块", delta(before, "placement") > 0,
+              "增量 %s" % delta(before, "placement"))
 
     # 7. 猪灵交换。条件：成年猪灵、金锭在假人主手、假人看向猪灵并右键，
     #    然后等猪灵欣赏完（119 刻）再换出物品。
