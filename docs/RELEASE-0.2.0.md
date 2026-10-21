@@ -1,4 +1,4 @@
-# Themis Stats V20261021.0.1.0（P0 + P1 + P2）
+# Themis Stats V20261021.0.2.0（Minecraft 26.3，P0 + P1 + P2）
 
 面向 **Carpet 生电服** 的玩家统计、排行榜与假人运行观察附属。
 
@@ -9,7 +9,10 @@
 - Carpet 规则分类：`themisStats`（注册在 `/carpet` **主**规则管理器下）
 - 世界内数据：`<世界>/themisstats/stats.db`（内置 SQLite，无需另搭数据库）
 
-> **发布标识**：tag `V20261021.0.1.0`　｜　附件 `themis-stats-1.21.11-V20261021.0.1.0.jar`
+> **发布标识**：tag `V20261021.0.2.0`　｜　附件 `themis-stats-26.3-V20261021.0.2.0.jar`
+>
+> **这一版面向 Minecraft 26.3 正式版。** 服务端在 26.3 上要用本版；
+> **1.21.11 服务端请继续用 `V20261021.0.1.0`**（本版是给 26.3 构建的，不能装到 1.21.11 上）。
 >
 > **正在用 `V20261020.0.1.0`？请务必升级。** 那一版有三个致命缺陷，
 > 其中「所有玩家都进不了服」会让服务端直接没法用。逐条说明见文末
@@ -21,26 +24,28 @@
 
 | 组件 | 版本 | 备注 |
 | --- | --- | --- |
-| Minecraft | 1.21.11 | 首发基线 |
-| Java | 21+ | |
-| Fabric Loader | 0.18.2+ | 实测 0.19.5 |
-| Fabric API | 0.141.6+1.21.11 | |
-| **Carpet** | **1.4.194** | **硬依赖**，缺少时 Fabric Loader 直接拒绝加载 |
+| Minecraft | **26.3**（正式版） | 本版首发基线；1.21.11 用 `V20261021.0.1.0` |
+| Java | **25**+ | 26.1 起要求 Java 25；构建、测试、运行统一用 JDK 25 |
+| Fabric Loader | 0.19.5 | 实测版本 |
+| Fabric API | 0.164.0+26.3 | |
+| **Carpet** | **26.3** | **硬依赖**，缺少时 Fabric Loader 直接拒绝加载 |
 
-> 本项目使用 **Mojang 官方映射**（`loom.officialMojangMappings()`），与 Carpet 1.4.194 保持同一命名空间，
-> 因此 Carpet 的公开 API（`EntityPlayerMPFake`、`EntityPlayerActionPack`、`carpet.api.settings.*`）
-> 解析到的成员与核对过的源码完全一致。其它组合未经实测。
+> **Minecraft 26.1 起游戏不再混淆**，Fabric 换成了不重映射的新版 Loom：
+> 不再需要 mappings，`modImplementation` 换成 `implementation`，`remapJar` 换成 `jar`。
+> 本项目本来就用 **Mojang 官方映射**，所以 26.3 版本的**业务源码一行未改**；
+> Carpet 的扩展面（`CarpetServer`、`ServerPlayerInterface`、`CarpetRule`）与 1.4.194 逐字节相同。
+> 其它组合未经实测。
 
 ---
 
 ## 安装
 
-1. 把 `themis-stats-0.1.0.jar` 放进服务端 `mods/`。
-2. 同时安装 Carpet 1.4.194 与 Fabric API 0.141.6+1.21.11。
+1. 把 `themis-stats-0.2.0+mc26.3.jar` 放进服务端 `mods/`。
+2. 同时安装 Carpet 26.3 与 Fabric API 0.164.0+26.3（Fabric Loader 0.19.5）。
 3. 启动服务端，日志应出现：
 
 ```
-[Themis Stats] v0.1.0 initialised, registered as a Carpet extension
+[Themis Stats] v0.2.0+mc26.3 initialised, registered as a Carpet extension
 [ThemisStats] registered the themisStats rule category (18 rules) in the /carpet manager
 [ThemisStats] statistics module ready, database <世界>/themisstats/stats.db
 ```
@@ -304,8 +309,13 @@ themis_stats_top('mining', 'bot', 1)         -> 第一页的 [名字, 数值] �
 
 | 项目 | 结果 |
 | --- | --- |
+| 依赖解析 | Minecraft **26.3 正式版**（Mojang 清单里 `type=release`）、Loader 0.19.5、Fabric API 0.164.0+26.3、Carpet 26.3、Loom 1.17.21、Gradle 9.5.1、Java 25 —— 全部实际解析并跑起来 |
 | 单元测试 | **115 个全通过**（真实 SQLite + 真实 schema，不是 mock） |
-| 端到端自测 | `tools/e2e_test.py` 六个阶段（2026-10-21 全流程跑通）：假人上线与命令树自检、`watch`/`unwatch` 完整交互、七类增强指标、低生命值与低耐久告警及恢复、5 分钟窗口的停滞告警、**意外离线告警（订阅者是另一个玩家）** |
+| 端到端自测 | `tools/e2e_test.py` 六个阶段（2026-10-21 在**干净的 26.3 专用服务端**上全流程跑通，**49 / 49**）：假人上线与命令树自检、`watch`/`unwatch` 完整交互、七类增强指标、低生命值与低耐久告警及恢复、5 分钟窗口的停滞告警、**意外离线告警（订阅者是另一个玩家）** |
+| 16 个 Mixin | **全部注入成功**（`defaultRequire=1`，注入不上就启动失败）；服务端日志无任何 Mixin 失败 |
+| 旧数据兼容 | 1.21.11 的统计库在 26.3 上打开后**逐表行数与累计值完全一致**，schema 版本不变、未触发迁移（在副本里验证，原库未改写） |
+| 1.21.11 维护基线 | 旧分支仍可用原工具链（Gradle 9.1.0 + Loom 1.13.6 + Java 21）构建，115 个单元测试全绿 |
+| 客户端侧 | **未执行**（本机没有原版 26.3 客户端），详见文末「明确未执行的部分」 |
 | 服务端实测 | 挖掘、放置、击杀（含 `minecraft:player` 分类）、死亡、统计在线时长、会话对比 |
 | 规则与命令 | `/carpet list themisStats` 输出 **18** 条带中文说明的规则；命令逐条跑通 |
 | 存储 | schema 1 → 2 → 3 → **4 → 5 → 6** 迁移实测，每次迁移前自动备份 |
@@ -341,6 +351,8 @@ themis_stats_top('mining', 'bot', 1)         -> 第一页的 [名字, 数值] �
 - 「意外离线」告警里的**「原因未知」**分支（假人的每条下线路径都带可观察的原因，
   本机实测覆盖的是「管理员移除」；这一类告警本身已端到端触发）。
 - 两个真实客户端同时看不同榜单。
+- **26.3 上的容量与性能对照**（1.21.11 上只做过小规模 A/B；本机达不到规格里的规模）。
+- 26.3 的 GitHub 侧发布流程与 CI 产物尚未在真实 CI 上跑过（工作流已写好，未触发）。
 - 20 真人／100 假人的负载基准（本环境达不到）。
 - 负责人转移后「原负责人被撤销详细访问」那一步（需要两个能发命令的真实玩家）。
 - 权限插件接入后的节点行为。
@@ -372,16 +384,15 @@ Windows 下用 `gradlew.bat`。发布包**已内嵌** SQLite 驱动，部署时�
 
 ## 发布物校验
 
-> 下面是**包含上面三个致命缺陷修复**的构建产物（`build/libs/themis-stats-0.1.0.jar`，
-> 与 `server/mods/` 里实测用的那一份逐字节一致）。
-> 发布时它作为附件 `themis-stats-1.21.11-V20261021.0.1.0.jar` 上传，内容完全相同。
+> 下面是**Minecraft 26.3 目标**的构建产物（`build/libs/themis-stats-0.2.0+mc26.3.jar`，
+> 与 `server-263/mods/` 里实测用的那一份逐字节一致）。
+> 发布时它作为附件 `themis-stats-26.3-V20261021.0.2.0.jar` 上传，内容完全相同。
 
 ```
-文件   themis-stats-0.1.0.jar
-       （发布附件名 themis-stats-1.21.11-V20261021.0.1.0.jar）
-大小   12,247,076 字节
-SHA-256  b93dbdf0def9ca728e2388aee08ccc1841ae138020428c2c1ad7f177d73c466e
-SHA-1    8826cdc6ea82c3fbf08009fea55c9f070762013c
+文件   themis-stats-0.2.0+mc26.3.jar
+       （发布附件名 themis-stats-26.3-V20261021.0.2.0.jar）
+大小   12,246,334 字节
+SHA-256  8debcf50de0043c8f7400810628670b30b51e93586a75b49608227d2d2b4e408
 ```
 
 > JAR 打包会写入文件时间戳，因此**不是逐字节可复现**的：同样的源码重新构建会得到不同的 SHA-256

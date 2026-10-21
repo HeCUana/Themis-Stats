@@ -31,10 +31,10 @@ import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REPO = "HeCUana/Themis-Stats"
-TAG = "V20261021.0.1.0"
-MC_VERSION = "1.21.11"
-JAR = os.path.join(ROOT, "build", "libs", "themis-stats-0.1.0.jar")
-NOTES = os.path.join(ROOT, "docs", "RELEASE-0.1.0.md")
+TAG = "V20261021.0.2.0"
+MC_VERSION = "26.3"
+JAR = os.path.join(ROOT, "build", "libs", "themis-stats-0.2.0+mc26.3.jar")
+NOTES = os.path.join(ROOT, "docs", "RELEASE-0.2.0.md")
 # 本机代理不一定在跑，留空即直连。
 RELEASE_PROXY = ""
 

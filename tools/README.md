@@ -59,10 +59,10 @@ python tools/inspect_db.py
 ## 发布新版本到 GitHub
 
 ```powershell
-# 1. 确认上传的是**实测过的那一份** jar（与 server/mods/ 里的逐字节一致）
-Get-FileHash build/libs/themis-stats-0.1.0.jar -Algorithm SHA256
+# 1. 确认上传的是**实测过的那一份** jar（与 server-263/mods/ 里的逐字节一致）
+Get-FileHash build/libs/themis-stats-0.2.0+mc26.3.jar -Algorithm SHA256
 
-# 2. 把发布说明写进 docs/RELEASE-0.1.0.md（它就是 Release 正文）
+# 2. 把发布说明写进 docs/RELEASE-0.2.0.md（它就是 Release 正文）
 
 # 3. 发布（tag + 正文 + jar 附件）
 python tools/release.py publish
@@ -71,11 +71,12 @@ python tools/release.py publish
 python tools/release.py verify
 ```
 
-> tag 命名沿用仓库惯例 `V<日期>.<版本>`，例如 `V20261021.0.1.0`；
+> tag 命名沿用仓库惯例 `V<日期>.<版本>`，例如 `V20261021.0.2.0`；
 > 附件名是 `themis-stats-<MC 版本>-<tag>.jar`。
-> 脚本用 GitHub API 发布，tag 落在默认分支（`1.21.11`）的 HEAD 上。
+> 脚本用 GitHub API 发布，tag 落在默认分支（`main`）的 HEAD 上。
 > **本机代理不一定在跑**，脚本默认直连；`git push` 若报连不上代理，
-> 用 `git -c http.proxy= -c https.proxy= push origin 1.21.11` 直连推。
+> 用 `git -c http.proxy= -c https.proxy= push origin 26.3` 直连推。
+> 发布参数（tag、jar、说明文件）都写在 `tools/release.py` 顶部，发版前先改那里。
 
 ## 三个环境限制（会影响可执行的验收范围）
 
