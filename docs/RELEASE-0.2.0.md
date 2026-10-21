@@ -360,6 +360,31 @@ themis_stats_top('mining', 'bot', 1)         -> 第一页的 [名字, 数值] �
 本 Mod 不会自动禁用 `/player`，不会批量修改 Carpet 的其他规则，
 不导入原版统计文件，也不把原版累计总数当作已分账的数据。
 
+### 已知问题：召唤没进过服的名字会卡一下（**与本 Mod 无关**）
+
+`/player <名字> spawn` 遇到**没进过服的名字**时，原版会替它联网查一次 Mojang 档案
+（`CachedUserNameToIdResolver.lookupGameProfile`，在服务端主线程上阻塞式发 HTTPS），
+名字不存在就 404，于是控制台会刷：
+
+```
+[xx:xx:xx WARN]: Couldn't find profile with name: X
+[xx:xx:xx WARN]: Could not lookup user whitelist entry for X
+[xx:xx:xx WARN]: Can't keep up! Is the server overloaded? Running 2245ms or 44 ticks behind
+```
+
+假人**最终还是会正常进服**（离线模式下会回退到本地算的 UUID），只是过程会卡一下。
+1.21.11 与 26.3 的实现完全一样，不是 26.3 引入的回归。
+
+**规避办法**：把要用的名字预先写进服务端的 `usercache.json`，解析就会命中本地缓存——
+不联网、不报警、不卡顿（离线 UUID 的算法是
+`UUID.nameUUIDFromBytes(("OfflinePlayer:" + name).getBytes(UTF_8))`）：
+
+```json
+[{"uuid":"<离线 UUID>","name":"<名字>","expiresOn":"2026-12-31 00:00:00 +0800"}]
+```
+
+写完**重启服务端**才生效（档案缓存在启动时读入）。
+
 ---
 
 ## 从源码构建

@@ -72,7 +72,46 @@
 | `instant_health` 在 26.3 生效期间血量会持续变化 | 自动化用例在读血量时可能读到**正在回血的中间值**（一次读数 8.500001，而实际已被打到 5） | 测试脚本治疗后显式 `effect clear`，读数才稳定 |
 | 方块转换（锄地、铲路、剥皮、打蜡/刮蜡）成为新的原版数据类型 | 这些是**转换**而不是「挖掘 + 放置」 | 采集点挂在 `ServerPlayerGameMode#destroyBlock` 与 `BlockItem#place` 上，转换路径不走这两个点，因此不会凭空多记一次挖掘加一次放置 |
 
-## 6. 未验证项
+## 6. 召唤假人时的联网查档案与卡顿（**不是本 Mod 的问题，但会卡服务端**）
+
+用 Carpet 召唤一个**没进过服的名字**时：
+
+```
+/player 1 spawn
+```
+
+会走原版的「名字 → 档案」解析：
+
+```
+carpet.commands.PlayerCommand.spawn
+  → net.minecraft.server.players.OldUsersConverter.convertMobOwnerIfNecessary
+    → net.minecraft.server.players.CachedUserNameToIdResolver.get
+      → CachedUserNameToIdResolver.lookupGameProfile   ← 在服务端主线程上阻塞式发 HTTPS
+```
+
+名字不在服务端的 `usercache.json` 里时，这次查询会 404，于是：
+
+* 打出 `Couldn't find profile with name: X`、`Could not lookup user whitelist entry for X` 的 WARN；
+* 服务端出现 `Can't keep up!`（实测一次召唤卡 **2.2 秒**，路径上会查两次）；
+* 假人**最终仍然会进服**（离线模式下回退到本地算的 UUID），只是过程很难看。
+
+**这不是 Themis Stats 造成的**（调用栈里没有本 Mod），而且 **1.21.11 与 26.3 的实现完全同构**
+（两版的 `CachedUserNameToIdResolver` 都有同一个 `resolveOfflineUsers` 开关与同一个
+`lookupGameProfile` 路径），不是 26.3 引入的回归。
+
+**解法**：把要用的名字预置进服务端的 `usercache.json`，解析就会命中本地缓存——不联网、不报警、不卡顿：
+
+```powershell
+# 离线 UUID 与原版 UUIDUtil.createOfflinePlayerUUID 一致
+python tools/seed_usercache.py server-263 bot_a Bot_B
+# 改完要重启服务端才生效（档案缓存在启动时读入）
+```
+
+已实测：预置前召唤会刷 Mojang 查询警告，预置后同一命令**日志干净**。
+
+---
+
+## 7. 未验证项
 
 见 `test-report.md` 的「未执行」清单。**没有原版 26.3 客户端**可操作，因此侧栏的实际渲染、
 按钮点击、分享预览等客户端侧项目没有实测；`crafted` 增强指标依然只能由真实客户端点击合成结果触发。

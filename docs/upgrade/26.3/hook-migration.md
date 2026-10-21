@@ -71,6 +71,7 @@
 
 | 现象 | 实测 | 对本 Mod 的影响 | 处理 |
 | --- | --- | --- | --- |
+| 召唤**没进过服的名字**会联网查 Mojang 档案 | Carpet 的 `/player <名字> spawn` → 原版 `OldUsersConverter.convertMobOwnerIfNecessary` → `CachedUserNameToIdResolver.lookupGameProfile`，在**服务端主线程上阻塞式**发 HTTPS 请求；名字不在 `usercache.json` 里就会 404，于是刷出 `Couldn't find profile with name: X`、`Could not lookup user whitelist entry for X`，并出现 `Can't keep up!`（实测一次召唤卡 2.2 秒） | **与本 Mod 无关**（调用栈里没有 themisstats），1.21.11 与 26.3 的实现**完全同构**，不是 26.3 回归 | 把名字预置进服务端 `usercache.json`（`tools/seed_usercache.py`）→ 解析命中本地缓存，**不联网、不报警、不卡顿**（已实测） |
 | 假人**回血很快** | 26.3 上假人 15 点伤害后约 4 秒就回满（假人从不吃东西，饱和度不会耗尽，回血一直生效） | 会让「低生命值」告警的两次采样对**时机**敏感 | 告警逻辑未改（仍是连续两次低于阈值）；测试用一次 19 点重击把血量压到 1 点来保证触发 |
 | `data get entity <玩家> Health` 读的是**存档副本** | 26.3 上该值明显滞后（读到 20.0 时假人实际已被射到约 2 点），照着它算伤害会**把假人打死** | 只能用于展示，不能当控制依据 | 测试改用本 Mod 自己的观察值（`/themisstats bot` 的「生命／饥饿」，每 2 秒采样活体数据） |
 | `attribute <实体> <属性> set <值>` 在 26.3 上不存在 | `/help attribute` → `/attribute <target> <attribute> (get|base|modifier)`：**写入类子命令被移除** | 没法用它把最大生命压到 5 来固定血量 | 同上，只用 `damage` |
