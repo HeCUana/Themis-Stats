@@ -26,6 +26,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -37,6 +38,9 @@ JAR = os.path.join(ROOT, "build", "libs", "themis-stats-0.2.0+mc26.3.jar")
 NOTES = os.path.join(ROOT, "docs", "RELEASE-0.2.0.md")
 # 本机代理不一定在跑，留空即直连。
 RELEASE_PROXY = ""
+# 直连失败时（DNS/代理抖动）再试这个通道；本机的假 IP DNS 会把域名指向 127.0.0.1，
+# 所以大文件上传常常要走显式代理才稳。
+FALLBACK_PROXY = "http://127.0.0.1:7897"
 
 for _stream in (sys.stdout, sys.stderr):
     try:
@@ -79,11 +83,23 @@ def api(token: str, path: str, method: str = "GET", payload: bytes | None = None
     if content_type:
         headers["Content-Type"] = content_type
     request = urllib.request.Request(url, data=payload, headers=headers, method=method)
-    try:
-        with OPENER.open(request, timeout=600) as response:
-            return response.status, response.read()
-    except urllib.error.HTTPError as exc:
-        return exc.code, exc.read()
+    last = None
+    openers = [OPENER]
+    if FALLBACK_PROXY:
+        openers.append(urllib.request.build_opener(
+            urllib.request.ProxyHandler({"https": FALLBACK_PROXY})))
+    for attempt in range(4):
+        for opener in openers:
+            try:
+                with opener.open(request, timeout=600) as response:
+                    return response.status, response.read()
+            except urllib.error.HTTPError as exc:
+                return exc.code, exc.read()
+            except Exception as exc:  # noqa: BLE001 —— 本机网络偶尔 DNS/代理抖动
+                last = exc
+        print("  第 %d 次尝试失败（%s），重试……" % (attempt + 1, last))
+        time.sleep(5)
+    raise SystemExit("GitHub API 连续失败：%s" % last)
 
 
 def local_digest(path: str) -> tuple[str, str]:
