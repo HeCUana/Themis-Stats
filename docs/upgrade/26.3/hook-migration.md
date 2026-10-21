@@ -71,6 +71,7 @@
 
 | 现象 | 实测 | 对本 Mod 的影响 | 处理 |
 | --- | --- | --- | --- |
+| **侧栏目标的创建包被重复发送 → 客户端崩溃** | 26.3 客户端对同一个目标只接受一次创建包，收到第二份就抛 `IllegalArgumentException: An objective with the name 'themisstats_sidebar' already exists!` 并断开。旧实现每次内容变化（在线时长每秒都在变）都重发创建包，1.21.11 客户端会默默替换掉所以看不出来，26.3 客户端直接崩 | **真实客户端崩溃**，是本次 26.3 适配抓到的最严重问题 | 创建包改为**每个客户端只发一次**（`SidebarSession` 记录已创建状态），之后只更新显示槽与分值；新增单测锁定「只创建一次」这条不变量，并实测运行期 12 轮内容变化只发 1 次 |
 | 召唤**没进过服的名字**会联网查 Mojang 档案 | Carpet 的 `/player <名字> spawn` → 原版 `OldUsersConverter.convertMobOwnerIfNecessary` → `CachedUserNameToIdResolver.lookupGameProfile`，在**服务端主线程上阻塞式**发 HTTPS 请求；名字不在 `usercache.json` 里就会 404，于是刷出 `Couldn't find profile with name: X`、`Could not lookup user whitelist entry for X`，并出现 `Can't keep up!`（实测一次召唤卡 2.2 秒） | **与本 Mod 无关**（调用栈里没有 themisstats），1.21.11 与 26.3 的实现**完全同构**，不是 26.3 回归 | 把名字预置进服务端 `usercache.json`（`tools/seed_usercache.py`）→ 解析命中本地缓存，**不联网、不报警、不卡顿**（已实测） |
 | 假人**回血很快** | 26.3 上假人 15 点伤害后约 4 秒就回满（假人从不吃东西，饱和度不会耗尽，回血一直生效） | 会让「低生命值」告警的两次采样对**时机**敏感 | 告警逻辑未改（仍是连续两次低于阈值）；测试用一次 19 点重击把血量压到 1 点来保证触发 |
 | `data get entity <玩家> Health` 读的是**存档副本** | 26.3 上该值明显滞后（读到 20.0 时假人实际已被射到约 2 点），照着它算伤害会**把假人打死** | 只能用于展示，不能当控制依据 | 测试改用本 Mod 自己的观察值（`/themisstats bot` 的「生命／饥饿」，每 2 秒采样活体数据） |

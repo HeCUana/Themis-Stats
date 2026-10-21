@@ -51,7 +51,7 @@ public final class SidebarService {
         private final net.minecraft.world.scores.Scoreboard scoreboard = new net.minecraft.world.scores.Scoreboard();
         private final Objective objective;
         private final Map<Integer, ScoreHolder> holders = new LinkedHashMap<>();
-        private String lastSignature = "";
+        private final SidebarSession session = new SidebarSession();
         private SidebarContent.Content pending;
         private String mode = "off";
         private String metric = "mining";
@@ -166,6 +166,12 @@ public final class SidebarService {
     /**
      * Sends the given content to the player, but only when it changed.
      *
+     * <p><b>The create packet is sent once per client.</b> The client accepts the creation of an
+     * objective only once; a second create packet for the same name makes the client throw
+     * {@code IllegalArgumentException: An objective with the name 'themisstats_sidebar' already
+     * exists!} and disconnect (26.3 clients do exactly that). The later refreshes therefore only
+     * touch the display slot and the score entries.</p>
+     *
      * @return {@code true} when something was sent
      */
     public boolean apply(ServerPlayer player, SidebarContent.Content content) {
@@ -173,20 +179,38 @@ public final class SidebarService {
             return false;
         }
         PlayerSidebar sidebar = sidebars.computeIfAbsent(player.getUUID(), uuid -> new PlayerSidebar());
+        SidebarSession session = sidebar.session;
+        boolean sent = false;
+
+        // The objective is created **once** for this client. The create packet has to come
+        // before the display and the score packets, otherwise the client does not know the
+        // objective yet.
+        if (session.needsObjectiveCreate()) {
+            player.connection.send(new ClientboundSetObjectivePacket(sidebar.objective,
+                    ClientboundSetObjectivePacket.METHOD_ADD));
+            session.markObjectiveCreated();
+            sent = true;
+        }
+
         StringBuilder signature = new StringBuilder(content.header());
         for (SidebarContent.Line line : content.lines()) {
             signature.append('|').append(line.text());
         }
         String newSignature = signature.toString();
-        if (newSignature.equals(sidebar.lastSignature)) {
-            return false;
+        boolean changed = session.contentChanged(newSignature);
+        if (changed) {
+            session.rememberSignature(newSignature);
         }
-        sidebar.lastSignature = newSignature;
-
-        player.connection.send(new ClientboundSetObjectivePacket(sidebar.objective,
-                ClientboundSetObjectivePacket.METHOD_ADD));
+        if (!changed && !session.needsDisplay()) {
+            return sent;
+        }
+        session.markDisplayed();
         player.connection.send(new ClientboundSetDisplayObjectivePacket(DisplaySlot.SIDEBAR,
                 sidebar.objective));
+        sent = true;
+        if (!changed) {
+            return sent;
+        }
         // Remove the lines that are not needed any more.
         for (Integer key : new ArrayList<>(sidebar.holders.keySet())) {
             if (key >= content.lines().size()) {
