@@ -22,6 +22,7 @@
 | `debug_piglin.py` | 单独调试「猪灵交换」：把每一步（坐标、手上物品、交互后状态）都打出来 |
 | `debug_piglin2.py` … `debug_piglin5.py` | 猪灵用例的分步排查：射线有没有命中（用 `attack` 探针）、假人手里有没有金锭、猪灵的副手与 Brain 记忆、掉落物干扰、**分两批发指令的时序**。结论已经写进 `docs/VERSIONS.md` 与 `docs/ACCEPTANCE.md` |
 | `save_failure_test.py` | 验证「保存异常」告警的端到端触发：**在服务端副本上**独占锁住统计库（`BEGIN EXCLUSIVE`），让后台写入线程拿到 `SQLITE_BUSY` 并进入降级状态，看告警是否发出。**不改动任何文件**，主测试库不受影响 |
+| `release.py` | 发布新版本到 GitHub：创建 Release（tag + 正文取自 `docs/RELEASE-*.md`）并上传 `build/libs` 里的 jar 附件。凭据取自本机 Git Credential Manager，**不打印 token**；默认直连（本机代理不一定在跑） |
 | `experiment-no-mod.ps1` | 对照实验：摘掉本 Mod 的 jar 起服，验证假人能否正常上线 |
 | `mc_client.py` | **未完成的实验工具**：最小 1.21.11 协议客户端骨架，尚未联调通过，不要当成可用工具 |
 
@@ -54,6 +55,27 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/start-server.ps1
 # 检查数据
 python tools/inspect_db.py
 ```
+
+## 发布新版本到 GitHub
+
+```powershell
+# 1. 确认上传的是**实测过的那一份** jar（与 server/mods/ 里的逐字节一致）
+Get-FileHash build/libs/themis-stats-0.1.0.jar -Algorithm SHA256
+
+# 2. 把发布说明写进 docs/RELEASE-0.1.0.md（它就是 Release 正文）
+
+# 3. 发布（tag + 正文 + jar 附件）
+python tools/release.py publish
+
+# 4. 核对线上附件的大小与 sha256
+python tools/release.py verify
+```
+
+> tag 命名沿用仓库惯例 `V<日期>.<版本>`，例如 `V20261021.0.1.0`；
+> 附件名是 `themis-stats-<MC 版本>-<tag>.jar`。
+> 脚本用 GitHub API 发布，tag 落在默认分支（`1.21.11`）的 HEAD 上。
+> **本机代理不一定在跑**，脚本默认直连；`git push` 若报连不上代理，
+> 用 `git -c http.proxy= -c https.proxy= push origin 1.21.11` 直连推。
 
 ## 三个环境限制（会影响可执行的验收范围）
 
