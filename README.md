@@ -28,6 +28,12 @@
 > 本项目本来就用 **Mojang 官方映射**，所以 26.3 分支的**业务源码一行未改**——
 > 详见 [`docs/upgrade/26.3/`](docs/upgrade/26.3/)。
 
+> 26.3 分支的验证状态：依赖全部解析成功、**编译与 115 个单元测试通过**、
+> 干净 26.3 专用服务端上**六阶段端到端回归 49 / 49 通过**、
+> 1.21.11 的旧统计库在 26.3 上打开后逐表行数与累计值**完全一致**（schema 未变）。
+> 客户端侧的项目（侧栏渲染、按钮点击、`crafted` 合成指标等）**未执行**——
+> 本机没有原版 26.3 客户端，详见 `docs/upgrade/26.3/test-report.md`。
+
 > 映射说明：本项目刻意使用 **Mojang 官方映射**，因为 Carpet 本身也是用官方映射构建的。
 > 保持同一命名空间，才能保证 `carpet.patches.EntityPlayerMPFake`、`carpet.helpers.EntityPlayerActionPack`、
 > `carpet.api.settings.*` 等接口解析到的成员与实际核对的源码完全一致。
