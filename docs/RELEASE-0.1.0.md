@@ -1,4 +1,4 @@
-# Themis Stats 0.1.0（P0 + P1 + P2）
+# Themis Stats V20261021.0.1.0（P0 + P1 + P2）
 
 面向 **Carpet 生电服** 的玩家统计、排行榜与假人运行观察附属。
 
@@ -8,6 +8,12 @@
 - 根命令：`/themisstats`（可选别名 `/tstats`，被占用时不注册）
 - Carpet 规则分类：`themisStats`（注册在 `/carpet` **主**规则管理器下）
 - 世界内数据：`<世界>/themisstats/stats.db`（内置 SQLite，无需另搭数据库）
+
+> **发布标识**：tag `V20261021.0.1.0`　｜　附件 `themis-stats-1.21.11-V20261021.0.1.0.jar`
+>
+> **正在用 `V20261020.0.1.0`？请务必升级。** 那一版有三个致命缺陷，
+> 其中「所有玩家都进不了服」会让服务端直接没法用。逐条说明见文末
+> 「0.1.0 发布后修掉的三个致命缺陷」。
 
 ---
 
@@ -368,9 +374,11 @@ Windows 下用 `gradlew.bat`。发布包**已内嵌** SQLite 驱动，部署时�
 
 > 下面是**包含上面三个致命缺陷修复**的构建产物（`build/libs/themis-stats-0.1.0.jar`，
 > 与 `server/mods/` 里实测用的那一份逐字节一致）。
+> 发布时它作为附件 `themis-stats-1.21.11-V20261021.0.1.0.jar` 上传，内容完全相同。
 
 ```
 文件   themis-stats-0.1.0.jar
+       （发布附件名 themis-stats-1.21.11-V20261021.0.1.0.jar）
 大小   12,247,076 字节
 SHA-256  b93dbdf0def9ca728e2388aee08ccc1841ae138020428c2c1ad7f177d73c466e
 SHA-1    8826cdc6ea82c3fbf08009fea55c9f070762013c
